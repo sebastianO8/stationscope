@@ -1,0 +1,13 @@
+# Pin the app to a single deliberate light theme so the chart colors are always
+# validated against the surface they actually render on (see app/streamlit_app.py
+# for the palette tokens these mirror).
+
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#f9f9f7"
+secondaryBackgroundColor = "#fcfcfb"
+textColor = "#0b0b0b"
+
+[browser]
+gatherUsageStats = false

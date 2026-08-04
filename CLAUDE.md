@@ -124,3 +124,11 @@ work (including expanding to more counties) should check here first.
   Erie, Kings, Nassau, Essex, Hamilton, Onondaga, Rensselaer, Cortland,
   Schoharie — Kings was checked in both PDFs), plus all 63 AALFFRS sections
   via the document's own subtotals. No discrepancies found anywhere.
+
+- [2026-08-03] Per-capita outliers in very low-population counties (e.g.,
+  Hamilton, population ~5,000) may reflect small-sample noise rather than
+  genuine service differences — interpret extreme values in sparse counties
+  cautiously. A handful of stations swings the per-10k-residents rate wildly
+  when the denominator is a few thousand people; the same handful barely
+  moves the rate in a populous county. This caveat is echoed in the app's
+  methodology note under the map.
