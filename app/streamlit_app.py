@@ -17,6 +17,13 @@ import streamlit as st
 
 PROCESSED = Path(__file__).resolve().parent.parent / "data" / "processed"
 GEOJSON_PATH = PROCESSED / "ny_ems_station_density_by_county.geojson"
+AGENCIES_CSV_PATH = PROCESSED / "ny_ems_agencies.csv"
+
+NO_COUNTY_SELECTED = "— All counties —"
+AGENCY_TYPES = [
+    ("ambulance_als", "Ambulance / ALS"),
+    ("bls_nontransport", "BLS non-transport"),
+]
 
 # --- Design tokens -----------------------------------------------------------
 # Chrome/ink and the blue sequential ramp come from the shared viz palette.
@@ -70,6 +77,11 @@ def load_data() -> tuple[dict, pd.DataFrame]:
         geojson = json.load(f)
     frame = pd.DataFrame([feature["properties"] for feature in geojson["features"]])
     return geojson, frame
+
+
+@st.cache_data
+def load_agency_data() -> pd.DataFrame:
+    return pd.read_csv(AGENCIES_CSV_PATH)
 
 
 def build_classes(frame: pd.DataFrame, column: str) -> tuple[pd.Series, list[str]]:
@@ -159,6 +171,71 @@ def stat_tile(label: str, value: str, unit: str) -> str:
         f'<p class="ss-tile-value">{value}</p>'
         f'<p class="ss-tile-unit">{unit}</p></div>'
     )
+
+
+def render_county_drilldown(frame: pd.DataFrame, agency_frame: pd.DataFrame) -> None:
+    """Selecting a county (map click or dropdown) shows its individual agencies.
+
+    The dropdown owns `st.session_state["county_selectbox"]` via its `key`.
+    A map click seeds that same session_state entry *before* this widget is
+    created (see `main()`), which is the supported way to drive a keyed
+    widget programmatically — passing a separately-computed `index` here
+    instead would make the widget's identity unstable across reruns and
+    silently drop the pending selection.
+    """
+    st.markdown('<p class="ss-eyebrow">County detail</p>', unsafe_allow_html=True)
+
+    county_options = [NO_COUNTY_SELECTED] + sorted(frame["county"])
+    st.session_state.setdefault("county_selectbox", NO_COUNTY_SELECTED)
+    choice = st.selectbox(
+        "Choose a county",
+        county_options,
+        key="county_selectbox",
+        label_visibility="collapsed",
+    )
+    selected_county = None if choice == NO_COUNTY_SELECTED else choice
+
+    if selected_county is None:
+        st.markdown(
+            '<p class="ss-note">Click a county on the map above, or choose one '
+            "here, to see its individually registered EMS agencies.</p>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown(
+        f'<p class="ss-caption" style="margin-top:0.9rem;"><b>{selected_county} '
+        "County</b></p>",
+        unsafe_allow_html=True,
+    )
+    county_agencies = agency_frame[agency_frame["county"] == selected_county]
+
+    for type_key, type_label in AGENCY_TYPES:
+        subset = (
+            county_agencies[county_agencies["agency_type"] == type_key][["agency_name", "city"]]
+            .sort_values("agency_name")
+        )
+        st.markdown(
+            f'<p class="ss-caption">{type_label} ({len(subset)})</p>',
+            unsafe_allow_html=True,
+        )
+        if subset.empty:
+            st.markdown(
+                f'<p class="ss-note">No {type_label} agencies registered in '
+                f"{selected_county} County.</p>",
+                unsafe_allow_html=True,
+            )
+            continue
+        st.dataframe(
+            subset,
+            hide_index=True,
+            width="stretch",
+            height=min(38 * (len(subset) + 1) + 3, 320),
+            column_config={
+                "agency_name": st.column_config.TextColumn("Agency", width="large"),
+                "city": st.column_config.TextColumn("City", width="medium"),
+            },
+        )
 
 
 def build_map(geojson: dict, frame: pd.DataFrame, metric_key: str):
@@ -262,6 +339,7 @@ def build_map(geojson: dict, frame: pd.DataFrame, metric_key: str):
 def main() -> None:
     inject_styles()
     geojson, frame = load_data()
+    agency_frame = load_agency_data()
 
     st.markdown(
         '<p class="ss-eyebrow">StationScope</p>'
@@ -313,11 +391,17 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    st.plotly_chart(
+    map_event = st.plotly_chart(
         build_map(geojson, frame, metric_key),
         width="stretch",
         config={"displayModeBar": False, "scrollZoom": False},
+        on_select="rerun",
+        selection_mode=["points"],
+        key="county_map",
     )
+    clicked_points = map_event["selection"]["points"] if map_event else []
+    if clicked_points:
+        st.session_state["county_selectbox"] = clicked_points[0]["customdata"][0]
 
     st.markdown(
         '<p class="ss-note">Counties are grouped into six equal-count '
@@ -330,6 +414,10 @@ def main() -> None:
         "cautiously.</p>",
         unsafe_allow_html=True,
     )
+
+    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
+
+    render_county_drilldown(frame, agency_frame)
 
     st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
 

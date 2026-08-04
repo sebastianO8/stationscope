@@ -132,3 +132,43 @@ work (including expanding to more counties) should check here first.
   when the denominator is a few thousand people; the same handful barely
   moves the rate in a populous county. This caveat is echoed in the app's
   methodology note under the map.
+
+- [2026-08-04] Extracting individual agency *names* (not just counts) from
+  the DOH PDFs required going beyond `pdfplumber`'s `extract_text()`, which
+  sorts characters by x-position to reconstruct reading order. That sorting
+  is exactly what causes the "service ID digits get smashed into the
+  service name" quirk logged above: the 4-digit Service ID is drawn at a
+  fixed column x-position regardless of name length, and when a name is
+  long enough to reach that x-position, x-sorting interleaves the ID's
+  digits into the name character-by-character (e.g. "Rocky Mtn Holdings
+  LLC" + ID 0767 flattens to "Rocky Mtn 0H7o6l7dings LLC"). No regex over
+  that flattened text can undo it. The fix (see
+  `group_rows_global`/`split_name_id` in `build_ems_station_density.py`):
+  read `page.chars` directly, group into rows by y-position while
+  preserving each character's *original stream order* within a row (which
+  keeps the full name intact ahead of the ID's digits, no interleaving),
+  then find the ID by scanning for the first digit whose x-position lands
+  within a few points of the known Service ID column — not by taking "the
+  last digit run in the text" (which would wrongly merge in-name digits
+  like "Clarence Fire District **#1**" with an adjacent real ID). Validated
+  by re-deriving agency counts from the extracted records and asserting
+  they match `count_agencies_by_county`'s independent, already-verified
+  counts — 63/63 sections matched exactly for both PDFs once the bug below
+  was also fixed.
+
+  This same pass also found and fixed a real off-by-one in the
+  already-shipped BLS non-transport counts: `count_agencies_by_county`
+  counted one line per "City, ST ZIP" match, but a mailing-address line
+  can incidentally match that same pattern (e.g. Jefferson County's
+  "PO Box 2, **Brownville, NY 13615**" address line, immediately followed
+  by that agency's real city line, "Dexter, NY 13634"), double-counting
+  that one agency. Fixed by only counting a match when the *next* line
+  does **not** also match — the true city line is always the last such
+  match in a record — which corrected Jefferson's BLS
+  `bls_nontransport_station_count` from 20 to 19 (statewide BLS total:
+  728 → 727) in `data/processed/ny_ems_station_density_by_county.csv`. A
+  blanket "reject lines containing PO Box" filter was tried first and
+  rejected; it fixed Jefferson but incorrectly dropped a legitimate
+  Orleans County record whose registered city field is literally "PO Box
+  387, NY 14476" — a reminder that content-based filters are riskier than
+  position/structure-based ones here.
