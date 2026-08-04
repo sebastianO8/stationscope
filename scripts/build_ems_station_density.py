@@ -87,11 +87,18 @@ def load_land_area() -> dict[str, float]:
         return {row["NAME"]: float(row["ALAND_SQMI"]) for row in reader}
 
 
+def load_fips() -> dict[str, str]:
+    with open(LAND_AREA_TXT, encoding="latin1") as f:
+        reader = csv.DictReader(f, delimiter="|")
+        return {row["NAME"]: row["GEOID"] for row in reader}
+
+
 def main() -> None:
     ambulance_als_counts = count_agencies_by_county(DOH_PDFS["ambulance_als"])
     bls_counts = count_agencies_by_county(DOH_PDFS["bls_nontransport"])
     population = load_population()
     land_area = load_land_area()
+    fips = load_fips()
 
     all_counties = sorted(
         (set(ambulance_als_counts) | set(bls_counts)) - {"Out Of State"}
@@ -103,6 +110,7 @@ def main() -> None:
         writer.writerow(
             [
                 "county",
+                "county_fips",
                 "ambulance_als_station_count",
                 "bls_nontransport_station_count",
                 "total_station_count",
@@ -116,11 +124,12 @@ def main() -> None:
             census_name = f"{county} County"
             pop = population.get(census_name)
             area = land_area.get(census_name)
+            county_fips = fips.get(census_name)
             ambulance_als = ambulance_als_counts.get(county, 0)
             bls = bls_counts.get(county, 0)
             total = ambulance_als + bls
 
-            if pop is None or area is None:
+            if pop is None or area is None or county_fips is None:
                 raise ValueError(f"No Census match for DOH county name: {county!r}")
 
             per_capita = total / (pop / 10_000)
@@ -129,6 +138,7 @@ def main() -> None:
             writer.writerow(
                 [
                     county,
+                    county_fips,
                     ambulance_als,
                     bls,
                     total,
