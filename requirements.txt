@@ -6,3 +6,4 @@ pandas>=3.0
 # Data prep only (scripts/) — not needed to run the app
 pdfplumber>=0.11
 duckdb>=1.5
+requests>=2.32

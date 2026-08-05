@@ -172,3 +172,34 @@ work (including expanding to more counties) should check here first.
   Orleans County record whose registered city field is literally "PO Box
   387, NY 14476" — a reminder that content-based filters are riskier than
   position/structure-based ones here.
+
+- [2026-08-05] Geocoding the ~1,770 individual agency addresses (via the US
+  Census Bureau's free batch geocoder, `scripts/geocode_agencies.py` ->
+  `data/processed/ny_ems_agencies_geocoded.csv`) required first extracting a
+  *street* address per agency, not just city/state/zip — the mailing-address
+  row (the 2nd of each record's 3 wrapped lines) wasn't captured by the
+  original agency extraction. It uses the same left-of-column boundary trick
+  as `split_name_id` (same fixed column x-position, ~257pt ALS / ~267pt
+  BLS), just without needing to isolate a trailing ID: whatever text sits
+  left of that column on the address row is the street. One wrinkle:
+  columns after the street aren't always in strict left-to-right stream
+  order (the BLS PDF draws phone before ownership on this row for some
+  records), but that doesn't matter — we only need to know where column 1
+  *ends*, not what follows it.
+
+  Match rate: 881/1,770 (49.8%) matched (772 exact, 109 non-exact), 10 ties,
+  879 no-match. Of the 889 unmatched/tied, 791 (89%) are PO Box addresses —
+  expected and not a geocoder failure, since a PO Box has no street-network
+  entry to geocode against; ~45% of all registered agency addresses in this
+  dataset are PO Boxes, so a ~50% overall match rate is close to the
+  ceiling for street-only geocoding. The remaining 98 are genuine street
+  addresses that still failed (non-standard formats like "One City Plaza"
+  or "Floyd Bennett Field", abbreviation mismatches, rural routes) or tied
+  on multiple equally-good candidates (e.g. "2502 Rt 52" — TIGER likely has
+  more than one matching segment) — these are flagged per-row in the output
+  CSV's `needs_manual_review` / `review_reason` columns rather than silently
+  dropped. A PO-Box-aware fallback (e.g. geocoding to a city/zip centroid
+  instead of a street point) would recover most of the remaining ~45% but
+  was deliberately left out of this pass — it changes the precision
+  semantics of the resulting points and deserves its own explicit decision
+  rather than being bundled into "geocode the addresses."

@@ -9,7 +9,7 @@ Inputs (data/raw/):
 
 Output (data/processed/):
   - ny_ems_station_density_by_county.csv  (per-county counts + density metrics)
-  - ny_ems_agencies.csv                   (individual agencies, name + city + type)
+  - ny_ems_agencies.csv                   (individual agencies: name, street, city, type)
 
 Note: this computes station *counts and individual agency records* from the
 DOH agency registry. It does not yet include geocoded station coordinates for
@@ -162,17 +162,36 @@ def split_name_id(chars: list, id_column_x: float) -> tuple[str | None, str | No
     return None, None
 
 
+def left_of_column(chars: list, column_x: float) -> str:
+    """Return a row's leftmost-column text, before the next column starts.
+
+    Used for the mailing-address row: the street address always occupies the
+    row's left column, ending exactly at the same Service-ID/Ownership
+    column boundary used by `split_name_id` -- whatever field occupies that
+    column on this particular row (phone, service type, ownership, ...), and
+    regardless of which column comes next in stream order (empirically, not
+    always strict left-to-right: one PDF draws phone before ownership on the
+    address row). We only need to know where column 1 *ends*, not what
+    follows it.
+    """
+    for i, char in enumerate(chars):
+        if char["x0"] >= column_x - SERVICE_ID_X_TOLERANCE:
+            return "".join(c["text"] for c in chars[:i]).strip()
+    return "".join(c["text"] for c in chars).strip()
+
+
 def extract_agency_records(pdf_path: Path) -> list[dict]:
-    """Extract individual agency records (county, name, city) from a DOH PDF.
+    """Extract individual agency records (county, name, street, city) from a DOH PDF.
 
     Walks every row on every page in order, using the row's reconstructed
     text for county attribution (`COUNTY_HEADER_RE`) and record boundaries
     (`AGENCY_RECORD_RE`, unchanged from `count_agencies_by_county`), and the
     row's characters for name/ID splitting (`split_name_id`). A record's
-    city is taken from the LAST `AGENCY_RECORD_RE`-matching row seen before
-    the next name row starts -- the same "true city line is the last match"
-    rule used to fix the Jefferson County BLS miscount in
-    `count_agencies_by_county`, applied here as well.
+    street address is taken from the row immediately following its name row
+    (always the second of a record's three wrapped lines); its city is taken
+    from the LAST `AGENCY_RECORD_RE`-matching row seen before the next name
+    row starts -- the same "true city line is the last match" rule used to
+    fix the Jefferson County BLS miscount in `count_agencies_by_county`.
     """
     records: list[dict] = []
     current_county = None
@@ -185,6 +204,7 @@ def extract_agency_records(pdf_path: Path) -> list[dict]:
                 {
                     "county": pending["county"],
                     "agency_name": pending["name"],
+                    "street": pending["street"],
                     "city": pending["city"],
                 }
             )
@@ -211,10 +231,13 @@ def extract_agency_records(pdf_path: Path) -> list[dict]:
                 name, _agency_id = split_name_id(chars, id_column_x)
                 if name is not None:
                     finalize()
-                    pending = {"county": current_county, "name": name, "city": None}
+                    pending = {"county": current_county, "name": name, "street": None, "city": None}
                     continue
 
                 if pending is not None:
+                    if pending["street"] is None:
+                        pending["street"] = left_of_column(chars, id_column_x)
+                        continue
                     city_match = re.match(r"^(.*?,\s*[A-Z]{2}\s+\d{5})", text)
                     if city_match:
                         pending["city"] = city_match.group(1).strip()
@@ -340,7 +363,9 @@ def main() -> None:
 
     with open(AGENCIES_CSV, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["county", "county_fips", "agency_type", "agency_name", "city"])
+        writer.writerow(
+            ["county", "county_fips", "agency_type", "agency_name", "street", "city"]
+        )
         for record in agency_records:
             if record["county"] == "Out Of State":
                 continue
@@ -348,7 +373,14 @@ def main() -> None:
             if county_fips is None:
                 raise ValueError(f"No Census match for DOH county name: {record['county']!r}")
             writer.writerow(
-                [record["county"], county_fips, record["agency_type"], record["agency_name"], record["city"]]
+                [
+                    record["county"],
+                    county_fips,
+                    record["agency_type"],
+                    record["agency_name"],
+                    record["street"],
+                    record["city"],
+                ]
             )
 
     print(f"Wrote {len(agency_records)} agency records to {AGENCIES_CSV}")
