@@ -13,17 +13,25 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 PROCESSED = Path(__file__).resolve().parent.parent / "data" / "processed"
 GEOJSON_PATH = PROCESSED / "ny_ems_station_density_by_county.geojson"
-AGENCIES_CSV_PATH = PROCESSED / "ny_ems_agencies.csv"
+# The geocoded file is a superset of ny_ems_agencies.csv (same rows, same
+# order, plus geocode columns), so it drives both the pin layer and the
+# full drill-down list -- one load, and the two can't drift apart.
+AGENCIES_CSV_PATH = PROCESSED / "ny_ems_agencies_geocoded.csv"
 
 NO_COUNTY_SELECTED = "— All counties —"
 AGENCY_TYPES = [
     ("ambulance_als", "Ambulance / ALS"),
     ("bls_nontransport", "BLS non-transport"),
 ]
+# Census batch geocoder statuses. "Match" covers both Exact and Non_Exact
+# (interpolated) results; "Tie" (ambiguous) and "No_Match" have no usable
+# coordinate and are deliberately not plotted.
+MAPPABLE_STATUS = "Match"
 
 # --- Design tokens -----------------------------------------------------------
 # Chrome/ink and the blue sequential ramp come from the shared viz palette.
@@ -39,6 +47,15 @@ HAIRLINE = "rgba(11,11,11,0.10)"
 # light -> dark, so class order is legible as a gradient.
 RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#1c5cab", "#0d366b"]
 N_CLASSES = len(RAMP)
+
+# County-detail view: unselected counties drop to a near-background fill so
+# they read as context, not data; the selected county keeps a mid-ramp blue
+# and the pins sit on top in a warm accent that can't be confused with the
+# blue sequential scale.
+CONTEXT_FILL = "#ececea"
+SELECTED_FILL = "#cde2fb"
+SELECTED_LINE = "#3987e5"
+PIN = "#c2410c"
 
 FONT_STACK = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
@@ -82,6 +99,205 @@ def load_data() -> tuple[dict, pd.DataFrame]:
 @st.cache_data
 def load_agency_data() -> pd.DataFrame:
     return pd.read_csv(AGENCIES_CSV_PATH)
+
+
+def mappable_agencies(agency_frame: pd.DataFrame, county: str) -> pd.DataFrame:
+    """Agencies in `county` that have a usable geocoded coordinate."""
+    county_rows = agency_frame[agency_frame["county"] == county]
+    return county_rows[county_rows["match_status"] == MAPPABLE_STATUS].dropna(
+        subset=["longitude", "latitude"]
+    )
+
+
+@st.cache_data
+def county_bounds(county_fips: str) -> tuple[float, float, float, float]:
+    """(min_lon, max_lon, min_lat, max_lat) of one county's geometry."""
+    geojson, _ = load_data()
+    lons: list[float] = []
+    lats: list[float] = []
+
+    def walk(coords) -> None:
+        # GeoJSON nests coordinates to varying depth (Polygon vs MultiPolygon);
+        # recurse until we hit a bare [lon, lat] pair.
+        if coords and isinstance(coords[0], (int, float)):
+            lons.append(coords[0])
+            lats.append(coords[1])
+            return
+        for part in coords:
+            walk(part)
+
+    for feature in geojson["features"]:
+        if feature["properties"]["county_fips"] == county_fips:
+            walk(feature["geometry"]["coordinates"])
+            break
+    if not lons:
+        raise ValueError(f"No geometry found for county_fips {county_fips!r}")
+    return min(lons), max(lons), min(lats), max(lats)
+
+
+def zoom_ranges(county_fips: str) -> tuple[list[float], list[float]]:
+    """Lon/lat axis ranges framing one county, padded to the map's aspect.
+
+    The geo subplot is roughly twice as wide as it is tall, so a county's raw
+    bounding box is widened toward that ratio before padding -- otherwise a
+    tall, narrow county (or a tiny one like New York County) renders with the
+    state squeezed into a sliver of the available width.
+    """
+    min_lon, max_lon, min_lat, max_lat = county_bounds(county_fips)
+    lon_span = max(max_lon - min_lon, 0.05)
+    lat_span = max(max_lat - min_lat, 0.05)
+
+    target_ratio = 2.0
+    if lon_span / lat_span < target_ratio:
+        lon_span = lat_span * target_ratio
+
+    lon_pad = lon_span * 0.18
+    lat_pad = lat_span * 0.18
+    lon_mid = (min_lon + max_lon) / 2
+    lat_mid = (min_lat + max_lat) / 2
+    return (
+        [lon_mid - lon_span / 2 - lon_pad, lon_mid + lon_span / 2 + lon_pad],
+        [lat_mid - lat_span / 2 - lat_pad, lat_mid + lat_span / 2 + lat_pad],
+    )
+
+
+def build_county_detail_map(
+    geojson: dict, frame: pd.DataFrame, points: pd.DataFrame, county: str, total: int
+):
+    """Zoomed county view: faded statewide context, the county, and its pins.
+
+    Built with graph_objects rather than px because the three layers need
+    independent styling -- px.choropleth splits one frame into a trace per
+    color class, which fights a "one county highlighted, the rest muted"
+    treatment.
+    """
+    county_row = frame[frame["county"] == county].iloc[0]
+    county_fips = county_row["county_fips"]
+    figure = go.Figure()
+
+    # Context layer: every county, flat neutral fill. Still clickable, so the
+    # neighbouring counties in view double as a way to move between counties.
+    figure.add_trace(
+        go.Choropleth(
+            geojson=geojson,
+            locations=frame["county_fips"],
+            featureidkey="properties.county_fips",
+            z=[0] * len(frame),
+            colorscale=[[0, CONTEXT_FILL], [1, CONTEXT_FILL]],
+            showscale=False,
+            marker_line_color=SURFACE,
+            marker_line_width=0.5,
+            customdata=frame[["county"]].to_numpy(),
+            hovertemplate="%{customdata[0]} County<extra></extra>",
+            name="",
+        )
+    )
+
+    # The selected county, lifted out of the context layer.
+    figure.add_trace(
+        go.Choropleth(
+            geojson=geojson,
+            locations=[county_fips],
+            featureidkey="properties.county_fips",
+            z=[0],
+            colorscale=[[0, SELECTED_FILL], [1, SELECTED_FILL]],
+            showscale=False,
+            marker_line_color=SELECTED_LINE,
+            marker_line_width=1.1,
+            hoverinfo="skip",
+        )
+    )
+
+    if not points.empty:
+        figure.add_trace(
+            go.Scattergeo(
+                lon=points["longitude"],
+                lat=points["latitude"],
+                mode="markers",
+                marker=dict(
+                    size=11,
+                    color=PIN,
+                    opacity=0.9,
+                    line=dict(width=1.4, color=SURFACE),
+                ),
+                customdata=points[["agency_name", "street", "city", "type_label"]].to_numpy(),
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "<span style='color:" + INK_MUTED + "'>%{customdata[3]}</span><br>"
+                    "%{customdata[1]}<br>%{customdata[2]}"
+                    "<extra></extra>"
+                ),
+                name="",
+            )
+        )
+
+    # The pin count travels with the map itself, not just the caption around
+    # it -- a sparse or empty county has to explain itself when the map is
+    # read on its own (or screenshotted) rather than reading as "no stations."
+    annotations = [
+        dict(
+            text=f"{len(points)} of {total} agencies mapped",
+            showarrow=False,
+            xref="paper",
+            yref="paper",
+            x=0.01,
+            y=0.02,
+            xanchor="left",
+            yanchor="bottom",
+            font=dict(family=FONT_STACK, size=11.5, color=INK_MUTED),
+        )
+    ]
+    if points.empty:
+        annotations.append(
+            dict(
+                text=(
+                    "<b>No mappable addresses</b><br>"
+                    f"All {total} registered agencies here list a PO Box or other<br>"
+                    "non-street address. This is missing address data,<br>"
+                    "not missing coverage — see the full list below."
+                ),
+                showarrow=False,
+                xref="paper",
+                yref="paper",
+                x=0.5,
+                y=0.5,
+                xanchor="center",
+                yanchor="middle",
+                align="center",
+                font=dict(family=FONT_STACK, size=13, color=INK_SECONDARY),
+                bgcolor="rgba(252,252,251,0.92)",
+                bordercolor=HAIRLINE,
+                borderwidth=1,
+                borderpad=12,
+            )
+        )
+
+    lon_range, lat_range = zoom_ranges(county_fips)
+    figure.update_layout(annotations=annotations)
+    figure.update_geos(
+        visible=False,
+        bgcolor=SURFACE,
+        showframe=False,
+        showcoastlines=False,
+        showland=False,
+        lonaxis_range=lon_range,
+        lataxis_range=lat_range,
+    )
+    figure.update_layout(
+        height=580,
+        margin=dict(l=0, r=0, t=8, b=0),
+        paper_bgcolor=SURFACE,
+        plot_bgcolor=SURFACE,
+        showlegend=False,
+        font=dict(family=FONT_STACK, color=INK_SECONDARY, size=12.5),
+        hoverlabel=dict(
+            bgcolor=SURFACE,
+            bordercolor=HAIRLINE,
+            font=dict(family=FONT_STACK, size=13, color=INK),
+            align="left",
+        ),
+    )
+    return figure
 
 
 def build_classes(frame: pd.DataFrame, column: str) -> tuple[pd.Series, list[str]]:
@@ -336,6 +552,107 @@ def build_map(geojson: dict, frame: pd.DataFrame, metric_key: str):
     return figure
 
 
+def handle_map_click(map_event, selected_county: str | None, valid_counties: set[str]) -> None:
+    """Apply a map click to the shared selection, then redraw.
+
+    The chart's `key` is derived from the current selection, so changing the
+    selection swaps in a fresh chart widget with no retained selection state.
+    That's what keeps the two inputs from fighting: without it, a stale click
+    event would replay on every later rerun and stomp the dropdown's value.
+
+    Clicks are validated against the real county list because the county
+    detail map has more than one clickable layer -- a click on an agency pin
+    carries an agency name in the same customdata slot, and must not be
+    mistaken for a county selection.
+    """
+    clicked_points = map_event["selection"]["points"] if map_event else []
+    if not clicked_points:
+        return
+    clicked = clicked_points[0].get("customdata")
+    if not clicked or clicked[0] not in valid_counties:
+        return
+    if clicked[0] != selected_county:
+        st.session_state["county_selectbox"] = clicked[0]
+        st.rerun()
+
+
+def render_statewide_map(geojson: dict, frame: pd.DataFrame, metric_key: str) -> None:
+    map_event = st.plotly_chart(
+        build_map(geojson, frame, metric_key),
+        width="stretch",
+        config={"displayModeBar": False, "scrollZoom": False},
+        on_select="rerun",
+        selection_mode=["points"],
+        key="county_map::all",
+    )
+    st.markdown(
+        '<p class="ss-note">Counties are grouped into six equal-count '
+        "(quantile) classes; each legend entry shows that class's actual value "
+        "range. Both metrics are strongly right-skewed, so equal-width classes "
+        "would leave most of the state in a single shade. Per-capita outliers "
+        "in very low-population counties (e.g., Hamilton, population ~5,000) "
+        "may reflect small-sample noise rather than genuine service "
+        "differences — interpret extreme values in sparse counties "
+        "cautiously.</p>",
+        unsafe_allow_html=True,
+    )
+    handle_map_click(map_event, None, set(frame["county"]))
+
+
+def render_county_map(
+    geojson: dict, frame: pd.DataFrame, agency_frame: pd.DataFrame, county: str
+) -> None:
+    """Zoomed county view with agency pins, plus an explicit coverage caveat."""
+    type_labels = dict(AGENCY_TYPES)
+    points = mappable_agencies(agency_frame, county).copy()
+    points["type_label"] = points["agency_type"].map(type_labels)
+    total = int((agency_frame["county"] == county).sum())
+    mapped = len(points)
+
+    st.markdown(
+        f'<p class="ss-caption"><b>{county} County</b> — '
+        f"{mapped} of {total} registered agencies shown as pins.</p>",
+        unsafe_allow_html=True,
+    )
+
+    map_event = st.plotly_chart(
+        build_county_detail_map(geojson, frame, points, county, total),
+        width="stretch",
+        config={"displayModeBar": False, "scrollZoom": False},
+        on_select="rerun",
+        selection_mode=["points"],
+        key=f"county_map::{county}",
+    )
+
+    # The gap between `mapped` and `total` is a geocoding artifact, not a
+    # coverage finding -- say so on the map itself, since an empty or sparse
+    # county otherwise reads as "no stations here."
+    unmapped = total - mapped
+    if mapped == 0:
+        note = (
+            f"<b>No pins available for {county} County.</b> None of its {total} "
+            "registered agencies could be placed on the map — every one lists a "
+            "PO Box or other non-street mailing address, which has no point to "
+            "geocode against. <b>This is missing address data, not missing "
+            "coverage:</b> all {total} agencies are listed in full below."
+        ).replace("{total}", str(total))
+    elif unmapped:
+        note = (
+            f"{unmapped} of this county's {total} agencies could not be placed on "
+            "the map — their registered addresses are PO Boxes or otherwise did "
+            "not geocode. <b>The pins undercount stations; they don't measure "
+            "coverage.</b> The full list of all agencies, mapped or not, is below."
+        )
+    else:
+        note = (
+            f"All {total} registered agencies in this county have a geocoded "
+            "street address. Pins mark the registered mailing address, which is "
+            "not always a staffed station."
+        )
+    st.markdown(f'<p class="ss-note">{note}</p>', unsafe_allow_html=True)
+    handle_map_click(map_event, county, set(frame["county"]))
+
+
 def main() -> None:
     inject_styles()
     geojson, frame = load_data()
@@ -374,8 +691,19 @@ def main() -> None:
 
     st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
 
-    # Filter row sits above everything it scopes.
-    st.markdown('<p class="ss-eyebrow">Color counties by</p>', unsafe_allow_html=True)
+    # The selected county is read *before* the map is drawn, so the map can
+    # render its zoomed state on the same run the selection changes.
+    selected_county = st.session_state.get("county_selectbox")
+    if selected_county == NO_COUNTY_SELECTED:
+        selected_county = None
+
+    # Filter row sits above everything it scopes. It colors the statewide map
+    # and orders the county table below; in the zoomed county view only the
+    # table is affected, so the label follows what it's actually doing.
+    st.markdown(
+        f'<p class="ss-eyebrow">{"Rank counties by" if selected_county else "Color counties by"}</p>',
+        unsafe_allow_html=True,
+    )
     metric_key = st.segmented_control(
         "Color counties by",
         list(METRICS),
@@ -386,34 +714,16 @@ def main() -> None:
     # map on a real choice rather than rendering an empty state.
     if metric_key is None:
         metric_key = next(iter(METRICS))
-    st.markdown(
-        f'<p class="ss-caption">{METRICS[metric_key]["caption"]}</p>',
-        unsafe_allow_html=True,
-    )
+    if selected_county is None:
+        st.markdown(
+            f'<p class="ss-caption">{METRICS[metric_key]["caption"]}</p>',
+            unsafe_allow_html=True,
+        )
 
-    map_event = st.plotly_chart(
-        build_map(geojson, frame, metric_key),
-        width="stretch",
-        config={"displayModeBar": False, "scrollZoom": False},
-        on_select="rerun",
-        selection_mode=["points"],
-        key="county_map",
-    )
-    clicked_points = map_event["selection"]["points"] if map_event else []
-    if clicked_points:
-        st.session_state["county_selectbox"] = clicked_points[0]["customdata"][0]
-
-    st.markdown(
-        '<p class="ss-note">Counties are grouped into six equal-count '
-        "(quantile) classes; each legend entry shows that class's actual value "
-        "range. Both metrics are strongly right-skewed, so equal-width classes "
-        "would leave most of the state in a single shade. Per-capita outliers "
-        "in very low-population counties (e.g., Hamilton, population ~5,000) "
-        "may reflect small-sample noise rather than genuine service "
-        "differences — interpret extreme values in sparse counties "
-        "cautiously.</p>",
-        unsafe_allow_html=True,
-    )
+    if selected_county is None:
+        render_statewide_map(geojson, frame, metric_key)
+    else:
+        render_county_map(geojson, frame, agency_frame, selected_county)
 
     st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
 

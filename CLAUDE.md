@@ -203,3 +203,57 @@ work (including expanding to more counties) should check here first.
   was deliberately left out of this pass — it changes the precision
   semantics of the resulting points and deserves its own explicit decision
   rather than being bundled into "geocode the addresses."
+
+- [2026-08-05] **The geocoded agency points are not a random sample of
+  stations — they skew away from rural counties, which matters for any
+  future coverage-desert analysis.** PO Box addresses (the dominant reason
+  a record fails to geocode, see above) are not evenly distributed: in the
+  20 lowest-population-density counties, 61.0% of agencies list a PO Box,
+  versus 31.3% in the 20 highest-density counties (Pearson correlation
+  between county population density and PO Box rate: -0.46). Hamilton
+  County — already flagged above as a small-sample outlier — is 100% PO
+  Box (7/7 agencies); Essex, Lewis, Franklin, and Delaware are all above
+  65%. This tracks with how rural EMS is actually organized: small
+  volunteer fire departments and ambulance corps commonly register a PO
+  Box rather than a station street address, whereas urban/municipal
+  services (city fire departments, hospital-based EMS) more often register
+  a real street address.
+
+  Net effect: a map or analysis built only from the successfully geocoded
+  points (881/1,770, see above) will systematically under-represent rural
+  counties' station counts more than urban ones — not because rural
+  counties have fewer stations, but because a larger share of their real
+  stations simply didn't produce a point. Any future "coverage desert"
+  analysis built on the geocoded point layer needs to account for this
+  skew explicitly (e.g. by working from the county-level DOH-registry
+  counts already in `ny_ems_station_density_by_county.csv` for the
+  *denominator*, rather than treating geocoded-point density as a proxy
+  for station density) — otherwise rural counties would look artificially
+  under-served on the point map even in counties where the registry-based
+  per-capita/per-area metrics show adequate coverage.
+
+- [2026-08-07] The app's county drill-down now plots geocoded agency pins
+  (`render_county_map` in `app/streamlit_app.py`), which puts the rural
+  geocoding skew above directly in front of users — so the pin layer is
+  built to never let a missing point read as a missing station:
+  * Every county view states "X of Y registered agencies shown as pins" in
+    the caption **and** as an annotation baked into the map figure itself,
+    so the caveat survives a screenshot or a glance at the map alone.
+  * Counties where *nothing* geocoded get a centered on-map panel instead
+    of an empty outline. This is not hypothetical: **Hamilton is 0 of 7**
+    (100% PO Box), and Essex is 2 of 16 — without the panel, Hamilton
+    renders as a blank county, the exact "looks like no coverage" failure.
+  * The drill-down list below the map is still built from *all* agencies,
+    mapped or not, so the address-only listing remains the complete record.
+  Only `match_status == "Match"` rows are plotted (both Exact and
+  Non_Exact/interpolated); Tie and No_Match have no usable coordinate.
+
+  Two implementation notes worth keeping. (1) The county map is built with
+  `graph_objects`, not `px.choropleth`, because px splits one frame into a
+  trace per color class, which fights the "one county highlighted, rest
+  muted" treatment. (2) The map has multiple clickable layers, so the click
+  handler validates the clicked `customdata` against the real county list
+  before treating it as a selection — otherwise clicking an agency pin
+  feeds an *agency name* into the county selector. Both the pin-click guard
+  and the "click a faded neighbour to jump counties" path were verified in
+  the browser.
