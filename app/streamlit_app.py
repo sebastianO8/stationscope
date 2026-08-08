@@ -18,20 +18,29 @@ import streamlit as st
 
 PROCESSED = Path(__file__).resolve().parent.parent / "data" / "processed"
 GEOJSON_PATH = PROCESSED / "ny_ems_station_density_by_county.geojson"
-# The geocoded file is a superset of ny_ems_agencies.csv (same rows, same
-# order, plus geocode columns), so it drives both the pin layer and the
-# full drill-down list -- one load, and the two can't drift apart.
-AGENCIES_CSV_PATH = PROCESSED / "ny_ems_agencies_geocoded.csv"
+# The located file is a superset of ny_ems_agencies.csv (same rows, same
+# order, plus geocode and station-match columns), so it drives both the pin
+# layer and the full drill-down list -- one load, and the two can't drift apart.
+AGENCIES_CSV_PATH = PROCESSED / "ny_ems_agencies_located.csv"
 
 NO_COUNTY_SELECTED = "— All counties —"
 AGENCY_TYPES = [
     ("ambulance_als", "Ambulance / ALS"),
     ("bls_nontransport", "BLS non-transport"),
 ]
-# Census batch geocoder statuses. "Match" covers both Exact and Non_Exact
-# (interpolated) results; "Tie" (ambiguous) and "No_Match" have no usable
-# coordinate and are deliberately not plotted.
-MAPPABLE_STATUS = "Match"
+
+# A pin's coordinate comes from one of two sources, and they do not mean the
+# same thing -- so they are counted and drawn separately rather than pooled.
+# `census_street` is the agency's OWN registered street address, geocoded.
+# `hifld_station_name_match` is a third-party fire/EMS station that matched the
+# agency by name -- the right building for that organisation, but not a
+# geocode of anything the agency itself registered.
+SOURCE_CENSUS = "census_street"
+SOURCE_HIFLD = "hifld_station_name_match"
+SOURCE_LABELS = {
+    SOURCE_CENSUS: "Own registered address",
+    SOURCE_HIFLD: "Matched fire/EMS station",
+}
 
 # --- Design tokens -----------------------------------------------------------
 # Chrome/ink and the blue sequential ramp come from the shared viz palette.
@@ -55,7 +64,11 @@ N_CLASSES = len(RAMP)
 CONTEXT_FILL = "#ececea"
 SELECTED_FILL = "#cde2fb"
 SELECTED_LINE = "#3987e5"
+# Solid pin = the agency's own address. Hollow pin = a station matched by name;
+# hollow reads as "less certain" without introducing a second hue that would
+# compete with the blue county fill.
 PIN = "#c2410c"
+PIN_STATION = "#c2410c"
 
 FONT_STACK = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
@@ -102,11 +115,10 @@ def load_agency_data() -> pd.DataFrame:
 
 
 def mappable_agencies(agency_frame: pd.DataFrame, county: str) -> pd.DataFrame:
-    """Agencies in `county` that have a usable geocoded coordinate."""
+    """Agencies in `county` that have a usable coordinate, from either source."""
     county_rows = agency_frame[agency_frame["county"] == county]
-    return county_rows[county_rows["match_status"] == MAPPABLE_STATUS].dropna(
-        subset=["longitude", "latitude"]
-    )
+    located = county_rows[county_rows["coordinate_source"].isin(SOURCE_LABELS)]
+    return located.dropna(subset=["longitude", "latitude"])
 
 
 @st.cache_data
@@ -208,35 +220,58 @@ def build_county_detail_map(
         )
     )
 
-    if not points.empty:
+    # One trace per coordinate source, so the legend can state what each pin
+    # actually represents instead of implying all pins are equally precise.
+    for source, marker, hover_tail in (
+        (
+            SOURCE_CENSUS,
+            dict(size=11, color=PIN, opacity=0.9, symbol="circle",
+                 line=dict(width=1.4, color=SURFACE)),
+            "%{customdata[1]}<br>%{customdata[2]}",
+        ),
+        (
+            SOURCE_HIFLD,
+            dict(size=11, color=PIN_STATION, opacity=0.95, symbol="circle-open",
+                 line=dict(width=2.6, color=PIN_STATION)),
+            "<i>at %{customdata[4]}</i><br>"
+            "<span style='color:" + INK_MUTED + "'>matched station — registered address "
+            "is %{customdata[1]}</span>",
+        ),
+    ):
+        subset = points[points["coordinate_source"] == source]
+        if subset.empty:
+            continue
         figure.add_trace(
             go.Scattergeo(
-                lon=points["longitude"],
-                lat=points["latitude"],
+                lon=subset["longitude"],
+                lat=subset["latitude"],
                 mode="markers",
-                marker=dict(
-                    size=11,
-                    color=PIN,
-                    opacity=0.9,
-                    line=dict(width=1.4, color=SURFACE),
-                ),
-                customdata=points[["agency_name", "street", "city", "type_label"]].to_numpy(),
+                marker=marker,
+                customdata=subset[
+                    ["agency_name", "street", "city", "type_label", "hifld_station_name"]
+                ].to_numpy(),
                 hovertemplate=(
                     "<b>%{customdata[0]}</b><br>"
                     "<span style='color:" + INK_MUTED + "'>%{customdata[3]}</span><br>"
-                    "%{customdata[1]}<br>%{customdata[2]}"
-                    "<extra></extra>"
+                    + hover_tail
+                    + "<extra></extra>"
                 ),
-                name="",
+                name=SOURCE_LABELS[source],
+                showlegend=True,
             )
         )
 
     # The pin count travels with the map itself, not just the caption around
     # it -- a sparse or empty county has to explain itself when the map is
     # read on its own (or screenshotted) rather than reading as "no stations."
+    n_census = int((points["coordinate_source"] == SOURCE_CENSUS).sum()) if not points.empty else 0
+    n_station = int((points["coordinate_source"] == SOURCE_HIFLD).sum()) if not points.empty else 0
     annotations = [
         dict(
-            text=f"{len(points)} of {total} agencies mapped",
+            text=(
+                f"{len(points)} of {total} agencies located "
+                f"({n_census} own address, {n_station} matched station)"
+            ),
             showarrow=False,
             xref="paper",
             yref="paper",
@@ -288,7 +323,19 @@ def build_county_detail_map(
         margin=dict(l=0, r=0, t=8, b=0),
         paper_bgcolor=SURFACE,
         plot_bgcolor=SURFACE,
-        showlegend=False,
+        showlegend=not points.empty,
+        legend=dict(
+            font=dict(size=11.5, color=INK_SECONDARY),
+            bgcolor="rgba(252,252,251,0.85)",
+            borderwidth=0,
+            x=0.985,
+            xanchor="right",
+            y=0.02,
+            yanchor="bottom",
+            itemsizing="constant",
+            itemclick=False,
+            itemdoubleclick=False,
+        ),
         font=dict(family=FONT_STACK, color=INK_SECONDARY, size=12.5),
         hoverlabel=dict(
             bgcolor=SURFACE,
@@ -608,10 +655,13 @@ def render_county_map(
     points["type_label"] = points["agency_type"].map(type_labels)
     total = int((agency_frame["county"] == county).sum())
     mapped = len(points)
+    n_census = int((points["coordinate_source"] == SOURCE_CENSUS).sum()) if mapped else 0
+    n_station = mapped - n_census
 
     st.markdown(
-        f'<p class="ss-caption"><b>{county} County</b> — '
-        f"{mapped} of {total} registered agencies shown as pins.</p>",
+        f'<p class="ss-caption"><b>{county} County</b> — {mapped} of {total} '
+        f"registered agencies shown as pins: {n_census} at their own registered "
+        f"address, {n_station} at a fire/EMS station matched by name.</p>",
         unsafe_allow_html=True,
     )
 
@@ -628,26 +678,39 @@ def render_county_map(
     # coverage finding -- say so on the map itself, since an empty or sparse
     # county otherwise reads as "no stations here."
     unmapped = total - mapped
+    station_note = (
+        f" {n_station} pin{'s' if n_station != 1 else ''} mark"
+        f"{'' if n_station != 1 else 's'} a fire/EMS station matched to the agency "
+        "by name (hollow pins) rather than the agency's own address, so the point "
+        "is that station's location, not a geocode of anything the agency "
+        "registered."
+        if n_station
+        else ""
+    )
     if mapped == 0:
         note = (
             f"<b>No pins available for {county} County.</b> None of its {total} "
-            "registered agencies could be placed on the map — every one lists a "
-            "PO Box or other non-street mailing address, which has no point to "
-            "geocode against. <b>This is missing address data, not missing "
-            "coverage:</b> all {total} agencies are listed in full below."
-        ).replace("{total}", str(total))
+            "registered agencies could be placed on the map — they list PO Boxes "
+            "or other non-street addresses with no point to geocode against, and "
+            "none matched a fire/EMS station by name. <b>This is missing address "
+            f"data, not missing coverage:</b> all {total} agencies are listed in "
+            "full below."
+        )
     elif unmapped:
         note = (
             f"{unmapped} of this county's {total} agencies could not be placed on "
             "the map — their registered addresses are PO Boxes or otherwise did "
-            "not geocode. <b>The pins undercount stations; they don't measure "
-            "coverage.</b> The full list of all agencies, mapped or not, is below."
+            "not geocode, and no station matched them by name. <b>The pins "
+            "undercount stations; they don't measure coverage.</b>"
+            + station_note
+            + " The full list of all agencies, mapped or not, is below."
         )
     else:
         note = (
-            f"All {total} registered agencies in this county have a geocoded "
-            "street address. Pins mark the registered mailing address, which is "
-            "not always a staffed station."
+            f"All {total} registered agencies in this county are placed."
+            + station_note
+            + " Pins mark a registered or matched address, which is not always a "
+            "staffed station."
         )
     st.markdown(f'<p class="ss-note">{note}</p>', unsafe_allow_html=True)
     handle_map_click(map_event, county, set(frame["county"]))

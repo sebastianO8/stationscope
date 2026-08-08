@@ -257,3 +257,56 @@ work (including expanding to more counties) should check here first.
   feeds an *agency name* into the county selector. Both the pin-click guard
   and the "click a faded neighbour to jump counties" path were verified in
   the browser.
+
+- [2026-08-08] **Similarity scoring was circular for the HIFLD name-match, so
+  matches are tiered by evidence instead.** Recovering coordinates for the
+  ~889 agencies the Census geocoder could not place
+  (`scripts/match_hifld_agencies.py` -> `ny_ems_agencies_located.csv`) works
+  by name-matching them to the HIFLD combined Fire/EMS layer, restricted to
+  the same county (via point-in-polygon — HIFLD has no county field) and the
+  same city. That city filter is exactly what makes a name-similarity
+  threshold worthless here: once filler words (fire, department, volunteer,
+  inc, ...) are stripped, most agency names reduce to just their town name,
+  which the filter already guaranteed matches. "Delmar Volunteer Ambulance
+  Service, Inc." vs "Delmar Fire District" scored **100/100** while carrying
+  no evidence beyond "both are in Delmar" — 71% of the top-scoring band rested
+  on a single shared token, and for 327 of those that token *was* the city.
+  The score is also **inverted**: richer names have more tokens that must all
+  agree, so a true match like "Findley Lake Volunteer Firemans Association" vs
+  "Findlay Lake Volunteer Fire Department" scored only 75. Ranking by score
+  therefore surfaces the *weakest* evidence first. If this is ever revisited,
+  don't reach for a better string metric — the filter and the score are
+  measuring the same thing.
+
+  What was accepted instead, on what the evidence actually is:
+  * **Tier A (429)** — the two names denote the same organisation: either both
+    are fire bodies, or they share a distinctive token that isn't the city.
+  * **Tier B corroborated (3)** — DOH lists an ambulance corps and HIFLD a fire
+    station, but the HIFLD name *itself* names an ambulance/rescue service
+    (e.g. "Long Lake Volunteer Fire Department **and Rescue Squad**").
+  * **Rejected (376)** — 150 sharing only the town name across organisation
+    types (asserting a specific building we have no evidence for), 223 below a
+    similarity floor, 3 with a station/district number conflict (right
+    organisation, wrong firehouse). A further 81 had no candidate at all.
+
+  Coverage went 881 -> 1,313 of 1,770 (49.8% -> 74.2%). These points are a
+  **different kind of fact** from Census ones and are stored and drawn as
+  such: `coordinate_source` is `census_street` (the agency's own registered
+  address, geocoded) or `hifld_station_name_match` (a third-party station
+  matched by name). The app counts them separately in every disclosure and
+  draws them hollow vs solid — never pooled into one "mapped" number.
+
+  Two known imprecisions, both accepted deliberately and flagged per-row:
+  * **38 matches have a near-tied runner-up** (`hifld_ambiguous_runner_up`) —
+    typically "X Fire District" vs "X Fire District: Station 2" scoring
+    identically, so which one is picked is arbitrary. The resulting offset is
+    well below the resolution of a drive-time analysis, which is why they were
+    kept rather than dropped.
+  * **1 station receives 2 agencies** (`hifld_shared_station`): St. Regis Falls
+    Ambulance and St. Regis Falls Fire Department both land on Saint Regis
+    Falls Volunteer Fire Department. Note this was **17 stations / 35 agencies**
+    when measured across Tier A *and* Tier B together — nearly every collision
+    was a fire department and an ambulance corps landing on the same firehouse,
+    so excluding Tier B removed 16 of them. Sharing a firehouse is often
+    genuine, but a shared point is also how a wrong match would look, so they
+    are flagged rather than deduped.
