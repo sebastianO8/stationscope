@@ -310,3 +310,51 @@ work (including expanding to more counties) should check here first.
     so excluding Tier B removed 16 of them. Sharing a firehouse is often
     genuine, but a shared point is also how a wrong match would look, so they
     are flagged rather than deduped.
+
+- [2026-08-09] **Ambulance-desert analysis** (`scripts/build_ambulance_deserts.py`
+  -> `ambulance_deserts_by_block_group.csv`; MRHRC definition: >25 min drive,
+  station -> block group, from the nearest *transporting* ambulance/ALS
+  agency — BLS non-transport agencies deliberately excluded). Routing is
+  OSRM on a Geofabrik NY extract, run locally in Docker
+  (`scripts/setup_osrm.sh`; the pbf is filtered to `w/highway r/type=restriction`
+  first, which is what keeps osrm-extract inside an 8 GB machine's Docker
+  VM). Demand points are CenPop2020 population-weighted block-group
+  centroids (15,739 populated). Results: strict scenario (495
+  `census_street` stations only) 546,536 people in deserts (2.71% of NY);
+  full scenario (+195 HIFLD-matched) 310,062 (1.53%); 50/62 counties
+  contain a desert under strict vs 51/62 in MRHRC-derived published
+  figures — a close external check. Hamilton verifies at 100%/84.5%,
+  Westchester at 0%/0%. Lessons and quirks, in rough order of importance:
+
+  * **A chunking bug survived the F⊆S invariant and was only caught by
+    county-level verification.** Batching sliced a lat-band-sorted centroid
+    list into consecutive runs; a run straddling one band's eastern end and
+    the next band's western end got a midpoint hundreds of km from its
+    extremes, and the nearest-to-midpoint candidate cap then starved
+    edge centroids of their local stations (western Chautauqua was assigned
+    Owego, Tioga County — 250+ km away — as "nearest", inflating the first
+    run's statewide numbers by ~200k people). The full-vs-strict invariant
+    was blind to it because both scenarios were starved identically. Fixed
+    by chunking strictly within grid cells plus a runtime assert that a
+    chunk spans ≤45 km. Moral: invariants that compare two outputs of the
+    same code path do not check the code path; verify against known ground
+    truth (Chautauqua has Jamestown and Dunkirk; 67.5% desert was absurd).
+  * **OSRM's default car profile is conservative on rural roads.** Four
+    spot-checks vs Google Maps matched road *distance* exactly (network and
+    snapping are right) but ran +4% to +37% slower on time. Bias direction:
+    more area classified desert. Consistent with the analysis being an
+    upper bound, but do not compare our minutes to posted response-time
+    standards without noting it.
+  * **4 Shelter Island block groups (pop 3,253) are unroutable by
+    construction**: ferry-only island, no located station on it — its own
+    EMS agency is one of the PO-Box unlocated. They are classified desert
+    with `drive_min` empty, and the app labels them "no road route" rather
+    than a number. Fishers Island nearly hit the same fate but its fire
+    district was HIFLD-matched onto the island, so within-island routing
+    works (4.9 min under full; desert under strict).
+  * Out-of-state stations are absent from the registry, so border block
+    groups are overstated — annotated on the map, not corrected.
+  * The desert figures inherit the rural PO-Box skew logged on 2026-08-05:
+    353 unlocated ALS agencies can only *shrink* deserts if located. Both
+    scenario figures are upper bounds; the strict-vs-full gap (236,474
+    people) is the visible cost of not trusting the HIFLD name-match.

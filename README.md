@@ -25,7 +25,9 @@ gap is the thing worth surfacing, not either number alone.
 | US Census Bureau county population estimates | Population, per county | Vintage 2025 | 2026-08-03 |
 | US Census Bureau Gazetteer files | Land area, per county | 2025 | 2026-08-03 |
 | US Census Bureau TIGER/Line county boundaries | Map geometry | 2025 | 2026-08-03 |
-| HIFLD Fire/EMS Stations (via Source Cooperative archive) | Station coordinates (not yet joined) | Jan 2025 | 2026-08-03 |
+| HIFLD Fire/EMS Stations (via Source Cooperative archive) | Station coordinates for agencies recovered by name-match (see CLAUDE.md) | Jan 2025 | 2026-08-03 |
+| US Census Bureau CenPop2020 block-group population-weighted centroids | Ambulance-desert demand points | 2020 Census | 2026-08-08 |
+| Geofabrik OpenStreetMap New York extract (`new-york-latest.osm.pbf`, gitignored — re-download to rebuild) | Road network for OSRM drive-time routing | rolling OSM snapshot | 2026-08-08 |
 
 Raw files live in `data/raw/` with source URLs; see `scripts/` for the
 pipelines that turn them into `data/processed/`.

@@ -22,6 +22,7 @@ GEOJSON_PATH = PROCESSED / "ny_ems_station_density_by_county.geojson"
 # order, plus geocode and station-match columns), so it drives both the pin
 # layer and the full drill-down list -- one load, and the two can't drift apart.
 AGENCIES_CSV_PATH = PROCESSED / "ny_ems_agencies_located.csv"
+DESERTS_CSV_PATH = PROCESSED / "ambulance_deserts_by_block_group.csv"
 
 NO_COUNTY_SELECTED = "— All counties —"
 AGENCY_TYPES = [
@@ -70,6 +71,12 @@ SELECTED_LINE = "#3987e5"
 PIN = "#c2410c"
 PIN_STATION = "#c2410c"
 
+# Ambulance-desert classes. Darker = desert regardless of provenance; the
+# lighter amber marks block groups whose only coverage is a HIFLD-matched
+# station -- i.e. where the map's answer depends on trusting the name-match.
+DESERT_BOTH = "#991b1b"
+DESERT_STRICT_ONLY = "#d97706"
+
 FONT_STACK = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
 METRICS = {
@@ -112,6 +119,13 @@ def load_data() -> tuple[dict, pd.DataFrame]:
 @st.cache_data
 def load_agency_data() -> pd.DataFrame:
     return pd.read_csv(AGENCIES_CSV_PATH)
+
+
+@st.cache_data
+def load_desert_data() -> pd.DataFrame:
+    return pd.read_csv(
+        DESERTS_CSV_PATH, dtype={"geoid": str, "county_fips": str}
+    )
 
 
 def mappable_agencies(agency_frame: pd.DataFrame, county: str) -> pd.DataFrame:
@@ -716,6 +730,185 @@ def render_county_map(
     handle_map_click(map_event, county, set(frame["county"]))
 
 
+def build_desert_map(geojson: dict, frame: pd.DataFrame, deserts: pd.DataFrame):
+    """Statewide three-class desert map.
+
+    Covered block groups (95%+ of the state) are deliberately not plotted --
+    the map's subject is the exception, and 15,000 "fine here" dots would
+    bury the few hundred that aren't. Counties render as neutral context.
+    """
+    figure = go.Figure()
+    figure.add_trace(
+        go.Choropleth(
+            geojson=geojson,
+            locations=frame["county_fips"],
+            featureidkey="properties.county_fips",
+            z=[0] * len(frame),
+            colorscale=[[0, CONTEXT_FILL], [1, CONTEXT_FILL]],
+            showscale=False,
+            marker_line_color=SURFACE,
+            marker_line_width=0.5,
+            customdata=frame[["county"]].to_numpy(),
+            hovertemplate="%{customdata[0]} County<extra></extra>",
+            name="",
+            showlegend=False,
+        )
+    )
+
+    plot = deserts[deserts["desert_class"] != "covered"].copy()
+
+    def minutes_label(value) -> str:
+        # Empty drive time = OSRM found no road route at all (ferry-only
+        # islands); say so instead of rendering "nan min".
+        return f"{value:.0f} min" if pd.notna(value) else "no road route"
+
+    plot["strict_label"] = plot["drive_min_strict"].map(minutes_label)
+    plot["full_label"] = plot["drive_min_full"].map(minutes_label)
+    plot["nearest_label"] = plot["nearest_station_full"].fillna(
+        "none reachable by road"
+    )
+
+    for class_key, label, color in (
+        ("desert_both", "Desert under both scenarios", DESERT_BOTH),
+        ("desert_strict_only", "Covered only by a name-matched station", DESERT_STRICT_ONLY),
+    ):
+        subset = plot[plot["desert_class"] == class_key]
+        if subset.empty:
+            continue
+        figure.add_trace(
+            go.Scattergeo(
+                lon=subset["longitude"],
+                lat=subset["latitude"],
+                mode="markers",
+                marker=dict(size=6, color=color, opacity=0.75,
+                            line=dict(width=0.5, color=SURFACE)),
+                customdata=subset[
+                    ["county", "population", "strict_label", "full_label", "nearest_label"]
+                ].to_numpy(),
+                hovertemplate=(
+                    "<b>%{customdata[0]} County</b> — %{customdata[1]:,} residents<br>"
+                    "own-address stations only: %{customdata[2]}<br>"
+                    "with name-matched stations: %{customdata[3]}<br>"
+                    "<span style='color:" + INK_MUTED + "'>nearest located station: "
+                    "%{customdata[4]}</span>"
+                    "<extra></extra>"
+                ),
+                name=label,
+                showlegend=True,
+            )
+        )
+
+    figure.update_geos(
+        visible=False,
+        bgcolor=SURFACE,
+        showframe=False,
+        showcoastlines=False,
+        showland=False,
+        fitbounds="locations",
+    )
+    figure.update_layout(
+        height=580,
+        margin=dict(l=0, r=0, t=8, b=0),
+        paper_bgcolor=SURFACE,
+        plot_bgcolor=SURFACE,
+        font=dict(family=FONT_STACK, color=INK_SECONDARY, size=12.5),
+        legend=dict(
+            font=dict(size=11.5, color=INK_SECONDARY),
+            bgcolor="rgba(252,252,251,0.85)",
+            borderwidth=0,
+            x=0.985, xanchor="right", y=0.98, yanchor="top",
+            itemsizing="constant", itemclick=False, itemdoubleclick=False,
+        ),
+        hoverlabel=dict(
+            bgcolor=SURFACE,
+            bordercolor=HAIRLINE,
+            font=dict(family=FONT_STACK, size=13, color=INK),
+            align="left",
+        ),
+        # The two caveats that must survive a screenshot of the map alone:
+        # every figure is a coverage floor, and borders are blind spots.
+        annotations=[
+            dict(
+                text=("<b>Upper bound, not a measurement:</b> computed from 690 of "
+                      "1,043 registered ambulance/ALS agencies —<br>the 353 without "
+                      "a usable address (mostly PO Boxes, skewing rural) can only "
+                      "shrink these deserts, never grow them."),
+                showarrow=False, xref="paper", yref="paper",
+                x=0.01, y=0.03, xanchor="left", yanchor="bottom", align="left",
+                font=dict(family=FONT_STACK, size=11.5, color=INK_SECONDARY),
+                bgcolor="rgba(252,252,251,0.92)",
+                bordercolor=HAIRLINE, borderwidth=1, borderpad=6,
+            ),
+            dict(
+                text=("Out-of-state stations are not in the NY registry — "
+                      "deserts hugging the PA/VT/NJ/CT/MA borders are overstated."),
+                showarrow=False, xref="paper", yref="paper",
+                x=0.01, y=0.145, xanchor="left", yanchor="bottom", align="left",
+                font=dict(family=FONT_STACK, size=11, color=INK_MUTED),
+            ),
+        ],
+    )
+    return figure
+
+
+def render_desert_analysis(geojson: dict, frame: pd.DataFrame) -> None:
+    deserts = load_desert_data()
+    total_pop = int(deserts["population"].sum())
+    strict_pop = int(deserts.loc[deserts["desert_strict"], "population"].sum())
+    full_pop = int(deserts.loc[deserts["desert_full"], "population"].sum())
+    n_counties_strict = deserts.loc[deserts["desert_strict"], "county"].nunique()
+
+    st.markdown('<p class="ss-eyebrow">Ambulance deserts</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="ss-sub">Census block groups more than 25 minutes\' drive from '
+        "the nearest ambulance station (the Maine Rural Health Research Center "
+        "definition), computed on the real road network. Only transporting "
+        "ambulance/ALS agencies count — a BLS first-response agency with no "
+        "ambulance does not end a desert. Two scenarios: <b>strict</b> uses only "
+        "stations at their own geocoded address; <b>full</b> adds stations "
+        "located by name-matching against the HIFLD fire/EMS layer.</p>",
+        unsafe_allow_html=True,
+    )
+
+    tiles = [
+        ("Desert population (strict)", f"{strict_pop:,}",
+         f"{100 * strict_pop / total_pop:.1f}% of NY, own-address stations only"),
+        ("Desert population (full)", f"{full_pop:,}",
+         f"{100 * full_pop / total_pop:.1f}% of NY, incl. name-matched stations"),
+        ("Provenance gap", f"{strict_pop - full_pop:,}",
+         "people whose coverage depends on the name-match"),
+        ("Counties touched", f"{n_counties_strict} of 62",
+         "contain at least one desert block group (strict)"),
+    ]
+    for column, (label, value, unit) in zip(st.columns(4, gap="small"), tiles):
+        column.markdown(stat_tile(label, value, unit), unsafe_allow_html=True)
+
+    # theme=None: every color/font in this figure is set explicitly, so
+    # Streamlit's theme pass adds nothing and skipping it avoids a benign
+    # console TypeError it emits on this figure. No `key`: the chart is
+    # stateless (no selection events). Verified that map-click selection on
+    # the charts above works with this section present.
+    st.plotly_chart(
+        build_desert_map(geojson, frame, deserts),
+        width="stretch",
+        theme=None,
+        config={"displayModeBar": False, "scrollZoom": False},
+    )
+
+    st.markdown(
+        '<p class="ss-note">Drive times are station → block group (the direction '
+        "an ambulance travels), measured on OpenStreetMap roads via OSRM. Route "
+        "spot-checks against Google Maps matched road distances exactly but ran "
+        "4–37% slower on rural roads — a conservative bias that, like the "
+        "unlocated agencies and the missing out-of-state stations, makes these "
+        "deserts an upper bound. Four Shelter Island block groups (pop. 3,253) "
+        "have no road connection to any located station and are classified "
+        "desert by construction — the island's own EMS agency is registered to "
+        "a PO Box and could not be placed.</p>",
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     inject_styles()
     geojson, frame = load_data()
@@ -791,6 +984,10 @@ def main() -> None:
     st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
 
     render_county_drilldown(frame, agency_frame)
+
+    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
+
+    render_desert_analysis(geojson, frame)
 
     st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
 

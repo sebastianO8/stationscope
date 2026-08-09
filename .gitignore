@@ -4,3 +4,8 @@ __pycache__/
 venv/
 .DS_Store
 .claude/settings.local.json
+
+# OSM extracts and OSRM preprocessing artifacts are too large for git;
+# source and vintage are cited in README.md — re-download to rebuild.
+*.osm.pbf
+data/raw/osrm/
