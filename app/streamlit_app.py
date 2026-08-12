@@ -50,7 +50,11 @@ PAGE = "#f9f9f7"  # page plane
 SURFACE = "#fcfcfb"  # chart surface
 INK = "#0b0b0b"  # primary ink
 INK_SECONDARY = "#52514e"
-INK_MUTED = "#898781"  # axis / labels
+# INK_MUTED is a chart-furniture grey: at 3.3:1 on the page plane it is below
+# the 4.5:1 floor for body text, so it stays on plotly axis/legend furniture
+# and INK_SOFT (5.1:1) carries the small HTML text -- labels, units, notes.
+INK_MUTED = "#898781"  # axis / chart labels only
+INK_SOFT = "#6b6a66"  # smallest readable body text
 HAIRLINE = "rgba(11,11,11,0.10)"
 
 # Blue sequential ramp, steps 100 / 200 / 300 / 400 / 550 / 700 — monotone
@@ -78,6 +82,24 @@ DESERT_BOTH = "#991b1b"
 DESERT_STRICT_ONLY = "#d97706"
 
 FONT_STACK = 'system-ui, -apple-system, "Segoe UI", sans-serif'
+
+# Every map shares one frame: same surface, same hover card, same legend
+# chrome. The figures set no explicit height -- they autosize into a
+# container the stylesheet clamps to the viewport (see `inject_styles`), so a
+# narrow screen gets a short map instead of the state stranded in a tall,
+# empty box.
+MAP_CONFIG = {"displayModeBar": False, "scrollZoom": False, "responsive": True}
+LEGEND_CHROME = dict(
+    font=dict(size=11.5, color=INK_SECONDARY),
+    # Opaque enough to stay readable where the frame is tight and the legend
+    # has to sit over the map rather than beside it.
+    bgcolor="rgba(252,252,251,0.90)",
+    bordercolor=HAIRLINE,
+    borderwidth=1,
+    itemsizing="constant",
+    itemclick=False,
+    itemdoubleclick=False,
+)
 
 METRICS = {
     "Per capita": {
@@ -187,6 +209,37 @@ def zoom_ranges(county_fips: str) -> tuple[list[float], list[float]]:
     )
 
 
+def apply_map_chrome(figure, legend: dict) -> None:
+    """Give a map figure the shared surface, hover card, and legend chrome.
+
+    No `height`: the figure autosizes into whatever box the stylesheet gives
+    it. A fixed height is what left the state marooned at the top of a tall
+    empty frame on narrow screens, since a geo subplot scales to the width it
+    is given and never shrinks the box to match.
+    """
+    figure.update_geos(
+        visible=False,
+        bgcolor=SURFACE,
+        showframe=False,
+        showcoastlines=False,
+        showland=False,
+    )
+    figure.update_layout(
+        autosize=True,
+        margin=dict(l=0, r=0, t=8, b=0),
+        paper_bgcolor=SURFACE,
+        plot_bgcolor=SURFACE,
+        font=dict(family=FONT_STACK, color=INK_SECONDARY, size=12.5),
+        legend={**LEGEND_CHROME, **legend},
+        hoverlabel=dict(
+            bgcolor=SURFACE,
+            bordercolor=HAIRLINE,
+            font=dict(family=FONT_STACK, size=13, color=INK),
+            align="left",
+        ),
+    )
+
+
 def build_county_detail_map(
     geojson: dict, frame: pd.DataFrame, points: pd.DataFrame, county: str, total: int
 ):
@@ -293,7 +346,7 @@ def build_county_detail_map(
             y=0.02,
             xanchor="left",
             yanchor="bottom",
-            font=dict(family=FONT_STACK, size=11.5, color=INK_MUTED),
+            font=dict(family=FONT_STACK, size=11.5, color=INK_SECONDARY),
         )
     ]
     if points.empty:
@@ -322,42 +375,14 @@ def build_county_detail_map(
         )
 
     lon_range, lat_range = zoom_ranges(county_fips)
-    figure.update_layout(annotations=annotations)
-    figure.update_geos(
-        visible=False,
-        bgcolor=SURFACE,
-        showframe=False,
-        showcoastlines=False,
-        showland=False,
-        lonaxis_range=lon_range,
-        lataxis_range=lat_range,
+    apply_map_chrome(
+        figure,
+        # Opposite corner from the "X of Y agencies located" annotation, so the
+        # two never stack on top of each other in a short frame.
+        dict(x=0.985, xanchor="right", y=0.03, yanchor="bottom"),
     )
-    figure.update_layout(
-        height=580,
-        margin=dict(l=0, r=0, t=8, b=0),
-        paper_bgcolor=SURFACE,
-        plot_bgcolor=SURFACE,
-        showlegend=not points.empty,
-        legend=dict(
-            font=dict(size=11.5, color=INK_SECONDARY),
-            bgcolor="rgba(252,252,251,0.85)",
-            borderwidth=0,
-            x=0.985,
-            xanchor="right",
-            y=0.02,
-            yanchor="bottom",
-            itemsizing="constant",
-            itemclick=False,
-            itemdoubleclick=False,
-        ),
-        font=dict(family=FONT_STACK, color=INK_SECONDARY, size=12.5),
-        hoverlabel=dict(
-            bgcolor=SURFACE,
-            bordercolor=HAIRLINE,
-            font=dict(family=FONT_STACK, size=13, color=INK),
-            align="left",
-        ),
-    )
+    figure.update_geos(lonaxis_range=lon_range, lataxis_range=lat_range)
+    figure.update_layout(annotations=annotations, showlegend=not points.empty)
     return figure
 
 
@@ -379,110 +404,222 @@ def inject_styles() -> None:
     st.markdown(
         f"""
         <style>
-          .stApp {{ background: {PAGE}; }}
-          .block-container {{ max-width: 1180px; padding: 2.6rem 2rem 3.5rem; }}
+          /* Every `.ss-*` rule is written as `.stApp .ss-x`. Streamlit's own
+             markdown styles are element-scoped (`[data-testid=…] h2`, `… p`),
+             which outranks a bare class -- headings came back 36px against a
+             21px declaration until these selectors carried a second class. */
+          /* One map height, referenced by the whole Streamlit wrapper chain. */
+          .stApp {{
+            background: {PAGE};
+            --ss-map-h: clamp(320px, 42vw + 60px, 560px);
+          }}
+          /* Top padding clears the app header, which is absolutely positioned
+             over the top of the scroll container. */
+          .stApp .block-container {{
+            max-width: 1180px; padding: 4.6rem 2rem 4rem;
+          }}
           [data-testid="stDecoration"], footer {{ display: none; }}
           [data-testid="stElementToolbar"] {{ display: none; }}
+          /* Developer chrome — meaningless to a reader of the published app. */
+          [data-testid="stAppDeployButton"] {{ display: none; }}
 
           /* Streamlit ships its own face; state ours on every element we own. */
-          .ss-eyebrow, .ss-title, .ss-sub, .ss-caption, .ss-note,
-          .ss-tile, .ss-tile-label, .ss-tile-value, .ss-tile-unit,
+          .stApp .ss-wordmark, .stApp .ss-vintage, .stApp .ss-title,
+          .stApp .ss-standfirst, .stApp .ss-section-title, .stApp .ss-deck,
+          .stApp .ss-label, .stApp .ss-caption, .stApp .ss-note,
+          .stApp .ss-tile, .stApp .ss-tile-label, .stApp .ss-tile-value,
+          .stApp .ss-tile-unit,
           [data-testid="stRadioGroup"], [data-testid="stSegmentedControl"],
           [data-testid="stDataFrame"] {{
             font-family: {FONT_STACK} !important;
           }}
 
-          .ss-eyebrow {{
+          /* --- Masthead: wordmark + the one fact that dates everything below */
+          .stApp .ss-masthead {{
+            display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem;
+            align-items: baseline; justify-content: space-between;
+            padding-bottom: 0.7rem; border-bottom: 1px solid {HAIRLINE};
+            margin-bottom: 2.4rem;
+          }}
+          .stApp .ss-wordmark {{
+            font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+            color: {INK}; line-height: 1.4;
+          }}
+          .stApp .ss-vintage {{
+            font-size: 12px; color: {INK_SOFT}; line-height: 1.4;
+          }}
+
+          /* --- Lead: the finding, then the qualifier that must ride with it */
+          .stApp .ss-title {{
+            font-size: 34px; font-weight: 600; letter-spacing: -0.025em;
+            color: {INK}; margin: 0 0 0.85rem; line-height: 1.18;
+            max-width: 26ch; text-wrap: balance;
+          }}
+          .stApp .ss-standfirst {{
+            font-size: 16px; color: {INK_SECONDARY}; margin: 0;
+            max-width: 58ch; line-height: 1.62;
+          }}
+          .stApp .ss-standfirst strong {{ color: {INK}; font-weight: 600; }}
+
+          /* --- Section headers carry the reading order. Space above a heading
+                 is what separates sections; the deck sits tight beneath it. */
+          .stApp .ss-section {{ margin: 4.4rem 0 0; }}
+          .stApp .ss-section-first {{ margin-top: 3.4rem; }}
+          .stApp .ss-section-rule {{
+            height: 1px; background: {HAIRLINE}; border: 0; margin: 0 0 1.2rem;
+          }}
+          .stApp .ss-section-title {{
+            font-size: 22px; font-weight: 600; letter-spacing: -0.015em;
+            color: {INK}; margin: 0 0 0.5rem; line-height: 1.28;
+            padding: 0; max-width: 46ch;
+          }}
+          .stApp .ss-deck {{
+            font-size: 14px; color: {INK_SECONDARY}; margin: 0 0 1.7rem;
+            max-width: 62ch; line-height: 1.62;
+          }}
+          .stApp .ss-deck b {{ color: {INK}; font-weight: 600; }}
+
+          /* Control label — a form label, not a section heading. */
+          .stApp .ss-label {{
             font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
-            text-transform: uppercase; color: {INK_MUTED}; margin: 0 0 0.55rem;
+            text-transform: uppercase; color: {INK_SOFT};
+            margin: 0 0 0.5rem; line-height: 1.4;
           }}
-          .ss-title {{
-            font-size: 30px; font-weight: 600; letter-spacing: -0.02em;
-            color: {INK}; margin: 0 0 0.4rem; line-height: 1.15;
-          }}
-          .ss-sub {{
-            font-size: 15px; color: {INK_SECONDARY}; margin: 0; max-width: 62ch;
-            line-height: 1.55;
-          }}
-          .ss-rule {{
-            height: 1px; background: {HAIRLINE}; border: 0;
-            margin: 1.9rem 0 1.6rem;
-          }}
-          .ss-tile {{
+
+          .stApp .ss-tile {{
             background: {SURFACE}; border: 1px solid {HAIRLINE};
             border-radius: 10px; padding: 15px 17px 16px;
           }}
-          .ss-tile-label {{
-            font-size: 11px; font-weight: 600; letter-spacing: 0.07em;
-            text-transform: uppercase; color: {INK_MUTED}; margin: 0 0 0.5rem;
+          /* The two figures the page leads on, marked in the desert hue so the
+             tile row has a subject rather than four equal readings. */
+          .stApp .ss-tile-lead {{ border-color: rgba(153,27,27,0.30); }}
+          .stApp .ss-tile-label {{
+            font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+            text-transform: uppercase; color: {INK_SOFT};
+            margin: 0 0 0.55rem; line-height: 1.35;
           }}
-          .ss-tile-value {{
-            font-size: 27px; font-weight: 600; letter-spacing: -0.02em;
+          .stApp .ss-tile-value {{
+            font-size: 29px; font-weight: 600; letter-spacing: -0.025em;
             color: {INK}; line-height: 1; margin: 0;
+            font-variant-numeric: tabular-nums;
           }}
-          .ss-tile-unit {{
-            font-size: 12px; color: {INK_MUTED}; margin: 0.4rem 0 0;
+          .stApp .ss-tile-unit {{
+            font-size: 12px; color: {INK_SOFT}; margin: 0.45rem 0 0;
+            line-height: 1.45;
           }}
-          .ss-caption {{
-            font-size: 13px; color: {INK_SECONDARY}; margin: 0.15rem 0 0;
-            line-height: 1.5;
+          /* Four tiles in a row only align if the blocks around the value
+             reserve the same height in every card. The unit always wraps
+             unevenly, so it always reserves two lines; the label only wraps
+             where the column is narrow, so it reserves a second line only
+             there rather than banking dead space at full width. */
+          @media (min-width: 641px) {{
+            .stApp .ss-tile-unit {{ min-height: 2.9em; }}
           }}
-          .ss-note {{
-            font-size: 12px; color: {INK_MUTED}; line-height: 1.6; margin: 0;
+          @media (min-width: 641px) and (max-width: 1060px) {{
+            .stApp .ss-tile-label {{ min-height: 2.7em; }}
           }}
-          .ss-note a {{ color: {INK_SECONDARY}; }}
+
+          .stApp .ss-caption {{
+            font-size: 13.5px; color: {INK_SECONDARY}; margin: 0.15rem 0 0;
+            line-height: 1.55; max-width: 62ch;
+          }}
+          /* Caveats are the load-bearing text on this page, not fine print:
+             they carry INK_SECONDARY rather than a grey that fails contrast. */
+          .stApp .ss-note {{
+            font-size: 12.5px; color: {INK_SECONDARY}; line-height: 1.7;
+            margin: 0; max-width: 68ch;
+          }}
+          .stApp .ss-note a {{ color: {INK}; }}
+          .stApp .ss-note b {{ color: {INK}; }}
 
           [data-testid="stSegmentedControl"] button {{
             font-size: 13.5px; letter-spacing: 0.005em;
           }}
-          div[data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
+          /* A 62-item picker does not need the full column width. */
+          [data-testid="stSelectbox"] {{ max-width: 340px; }}
+
+          /* Maps autosize into this box, so the frame tracks the viewport
+             instead of stranding the state in a tall empty rectangle.
+             Every level of the wrapper chain needs the height: a figure with
+             no explicit height leaves Streamlit's element wrapper at its
+             450px default, and that wrapper clips -- which silently cut the
+             bottom off every map, taking the desert caveat panels and the
+             county pin count with it. The outermost wrapper is a flex item
+             sized by `flex-basis`, which ignores `height` on its own. */
+          [data-testid="stElementContainer"]:has(> [data-testid="stFullScreenFrame"] > [data-testid="stPlotlyChart"]) {{
+            flex-basis: var(--ss-map-h) !important;
+          }}
+          [data-testid="stElementContainer"]:has(> [data-testid="stFullScreenFrame"] > [data-testid="stPlotlyChart"]),
+          [data-testid="stFullScreenFrame"]:has(> [data-testid="stPlotlyChart"]),
+          [data-testid="stPlotlyChart"],
+          [data-testid="stPlotlyChart"] > div {{
+            height: var(--ss-map-h) !important;
+          }}
+
+          @media (max-width: 640px) {{
+            .stApp .block-container {{ padding: 4rem 1.1rem 2.5rem; }}
+            .stApp .ss-title {{ font-size: 26px; max-width: none; }}
+            .stApp .ss-standfirst {{ font-size: 15px; }}
+            .stApp .ss-section {{ margin-top: 3rem; }}
+            .stApp .ss-section-title {{ font-size: 19px; max-width: none; }}
+          }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def stat_tile(label: str, value: str, unit: str) -> str:
+def section_header(title: str, deck: str, first: bool = False) -> None:
+    """A rule, a title, and one line saying what this section answers."""
+    st.markdown(
+        f'<div class="ss-section{" ss-section-first" if first else ""}">'
+        '<hr class="ss-section-rule">'
+        f'<h2 class="ss-section-title">{title}</h2>'
+        f'<p class="ss-deck">{deck}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def stat_tile(label: str, value: str, unit: str, lead: bool = False) -> str:
     return (
-        f'<div class="ss-tile"><p class="ss-tile-label">{label}</p>'
+        f'<div class="ss-tile{" ss-tile-lead" if lead else ""}">'
+        f'<p class="ss-tile-label">{label}</p>'
         f'<p class="ss-tile-value">{value}</p>'
         f'<p class="ss-tile-unit">{unit}</p></div>'
     )
 
 
-def render_county_drilldown(frame: pd.DataFrame, agency_frame: pd.DataFrame) -> None:
-    """Selecting a county (map click or dropdown) shows its individual agencies.
+def render_county_picker(frame: pd.DataFrame) -> None:
+    """Create the county dropdown. Must run *after* every map on the page.
 
     The dropdown owns `st.session_state["county_selectbox"]` via its `key`.
     A map click seeds that same session_state entry *before* this widget is
-    created (see `main()`), which is the supported way to drive a keyed
-    widget programmatically — passing a separately-computed `index` here
-    instead would make the widget's identity unstable across reruns and
-    silently drop the pending selection.
+    created (see `handle_map_click`), which is the supported way to drive a
+    keyed widget programmatically — passing a separately-computed `index`
+    here instead would make the widget's identity unstable across reruns and
+    silently drop the pending selection. Streamlit also forbids assigning to
+    a widget's key once that widget exists in the current run, so the call
+    order (maps first, picker last) is load-bearing, not cosmetic. `main()`
+    reserves a container higher up the page and fills it with this widget, so
+    the control still *appears* directly above the map it drives.
     """
-    st.markdown('<p class="ss-eyebrow">County detail</p>', unsafe_allow_html=True)
-
-    county_options = [NO_COUNTY_SELECTED] + sorted(frame["county"])
+    st.markdown(
+        '<p class="ss-label">Zoom to one county</p>', unsafe_allow_html=True
+    )
     st.session_state.setdefault("county_selectbox", NO_COUNTY_SELECTED)
-    choice = st.selectbox(
-        "Choose a county",
-        county_options,
+    st.selectbox(
+        "Zoom to one county",
+        [NO_COUNTY_SELECTED] + sorted(frame["county"]),
         key="county_selectbox",
         label_visibility="collapsed",
     )
-    selected_county = None if choice == NO_COUNTY_SELECTED else choice
 
-    if selected_county is None:
-        st.markdown(
-            '<p class="ss-note">Click a county on the map above, or choose one '
-            "here, to see its individually registered EMS agencies.</p>",
-            unsafe_allow_html=True,
-        )
-        return
 
+def render_county_agencies(agency_frame: pd.DataFrame, selected_county: str) -> None:
+    """The complete registry listing for one county — mapped agencies or not."""
     st.markdown(
-        f'<p class="ss-caption" style="margin-top:0.9rem;"><b>{selected_county} '
-        "County</b></p>",
+        f'<p class="ss-caption" style="margin-top:0.9rem;"><b>Every registered '
+        f"agency in {selected_county} County</b></p>",
         unsafe_allow_html=True,
     )
     county_agencies = agency_frame[agency_frame["county"] == selected_county]
@@ -574,40 +711,20 @@ def build_map(geojson: dict, frame: pd.DataFrame, metric_key: str):
         ),
     )
 
-    figure.update_geos(
-        visible=False,
-        bgcolor=SURFACE,
-        showframe=False,
-        showcoastlines=False,
-        showland=False,
-    )
-    figure.update_layout(
-        height=580,
-        margin=dict(l=0, r=0, t=8, b=0),
-        paper_bgcolor=SURFACE,
-        plot_bgcolor=SURFACE,
-        font=dict(family=FONT_STACK, color=INK_SECONDARY, size=12.5),
-        legend=dict(
+    apply_map_chrome(
+        figure,
+        # Bottom-left is the one corner New York's outline never reaches at any
+        # aspect ratio (it is Pennsylvania), so the legend can sit inside the
+        # frame without covering a county once the frame hugs the state.
+        dict(
             title=dict(
                 text=f"<b>{metric['legend']}</b>",
                 font=dict(size=11.5, color=INK_MUTED),
             ),
-            font=dict(size=12, color=INK_SECONDARY),
-            bgcolor="rgba(0,0,0,0)",
-            borderwidth=0,
-            x=0.985,
-            xanchor="right",
-            y=0.5,
-            yanchor="middle",
-            itemsizing="constant",
-            itemclick=False,
-            itemdoubleclick=False,
-        ),
-        hoverlabel=dict(
-            bgcolor=SURFACE,
-            bordercolor=HAIRLINE,
-            font=dict(family=FONT_STACK, size=13, color=INK),
-            align="left",
+            x=0.015,
+            xanchor="left",
+            y=0.03,
+            yanchor="bottom",
         ),
     )
     return figure
@@ -641,7 +758,7 @@ def render_statewide_map(geojson: dict, frame: pd.DataFrame, metric_key: str) ->
     map_event = st.plotly_chart(
         build_map(geojson, frame, metric_key),
         width="stretch",
-        config={"displayModeBar": False, "scrollZoom": False},
+        config=MAP_CONFIG,
         on_select="rerun",
         selection_mode=["points"],
         key="county_map::all",
@@ -682,7 +799,7 @@ def render_county_map(
     map_event = st.plotly_chart(
         build_county_detail_map(geojson, frame, points, county, total),
         width="stretch",
-        config={"displayModeBar": False, "scrollZoom": False},
+        config=MAP_CONFIG,
         on_select="rerun",
         selection_mode=["points"],
         key=f"county_map::{county}",
@@ -798,90 +915,91 @@ def build_desert_map(geojson: dict, frame: pd.DataFrame, deserts: pd.DataFrame):
             )
         )
 
-    figure.update_geos(
-        visible=False,
-        bgcolor=SURFACE,
-        showframe=False,
-        showcoastlines=False,
-        showland=False,
-        fitbounds="locations",
+    apply_map_chrome(
+        figure,
+        # Top-left is open water and Canada; the caveat panels own the
+        # bottom-left, so the legend takes the opposite corner.
+        dict(x=0.015, xanchor="left", y=0.97, yanchor="top"),
     )
+    figure.update_geos(fitbounds="locations")
     figure.update_layout(
-        height=580,
-        margin=dict(l=0, r=0, t=8, b=0),
-        paper_bgcolor=SURFACE,
-        plot_bgcolor=SURFACE,
-        font=dict(family=FONT_STACK, color=INK_SECONDARY, size=12.5),
-        legend=dict(
-            font=dict(size=11.5, color=INK_SECONDARY),
-            bgcolor="rgba(252,252,251,0.85)",
-            borderwidth=0,
-            x=0.985, xanchor="right", y=0.98, yanchor="top",
-            itemsizing="constant", itemclick=False, itemdoubleclick=False,
-        ),
-        hoverlabel=dict(
-            bgcolor=SURFACE,
-            bordercolor=HAIRLINE,
-            font=dict(family=FONT_STACK, size=13, color=INK),
-            align="left",
-        ),
         # The two caveats that must survive a screenshot of the map alone:
-        # every figure is a coverage floor, and borders are blind spots.
+        # every figure is a coverage floor, and borders are blind spots. They
+        # share one panel rather than floating as two annotations at fixed
+        # paper offsets -- offsets that hold at 560px collide at 320px, and
+        # the second caveat is not optional enough to risk. Lines are hand
+        # wrapped to ~55 characters so the panel fits the narrowest frame.
         annotations=[
             dict(
-                text=("<b>Upper bound, not a measurement:</b> computed from 690 of "
-                      "1,043 registered ambulance/ALS agencies —<br>the 353 without "
-                      "a usable address (mostly PO Boxes, skewing rural) can only "
-                      "shrink these deserts, never grow them."),
+                text=(
+                    "<b>Upper bound, not a measurement:</b> computed<br>"
+                    "from 690 of 1,043 registered ambulance/ALS<br>"
+                    "agencies — the 353 without a usable address<br>"
+                    "(mostly PO Boxes, skewing rural) can only shrink<br>"
+                    "these deserts, never grow them.<br>"
+                    "<span style='color:" + INK_SOFT + "'>"
+                    "Out-of-state stations are not in the NY registry<br>"
+                    "— deserts hugging the PA/VT/NJ/CT/MA borders<br>"
+                    "are overstated.</span>"
+                ),
                 showarrow=False, xref="paper", yref="paper",
-                x=0.01, y=0.03, xanchor="left", yanchor="bottom", align="left",
+                x=0.015, y=0.03, xanchor="left", yanchor="bottom", align="left",
                 font=dict(family=FONT_STACK, size=11.5, color=INK_SECONDARY),
                 bgcolor="rgba(252,252,251,0.92)",
-                bordercolor=HAIRLINE, borderwidth=1, borderpad=6,
-            ),
-            dict(
-                text=("Out-of-state stations are not in the NY registry — "
-                      "deserts hugging the PA/VT/NJ/CT/MA borders are overstated."),
-                showarrow=False, xref="paper", yref="paper",
-                x=0.01, y=0.145, xanchor="left", yanchor="bottom", align="left",
-                font=dict(family=FONT_STACK, size=11, color=INK_MUTED),
+                bordercolor=HAIRLINE, borderwidth=1, borderpad=7,
             ),
         ],
     )
     return figure
 
 
-def render_desert_analysis(geojson: dict, frame: pd.DataFrame) -> None:
-    deserts = load_desert_data()
+def desert_summary(deserts: pd.DataFrame) -> dict:
+    """The four desert headline figures, shared by the lead and its section."""
     total_pop = int(deserts["population"].sum())
     strict_pop = int(deserts.loc[deserts["desert_strict"], "population"].sum())
     full_pop = int(deserts.loc[deserts["desert_full"], "population"].sum())
-    n_counties_strict = deserts.loc[deserts["desert_strict"], "county"].nunique()
+    return {
+        "total_pop": total_pop,
+        "strict_pop": strict_pop,
+        "full_pop": full_pop,
+        "strict_pct": 100 * strict_pop / total_pop,
+        "full_pct": 100 * full_pop / total_pop,
+        "counties": int(deserts.loc[deserts["desert_strict"], "county"].nunique()),
+    }
 
-    st.markdown('<p class="ss-eyebrow">Ambulance deserts</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="ss-sub">Census block groups more than 25 minutes\' drive from '
-        "the nearest ambulance station (the Maine Rural Health Research Center "
+
+def render_desert_analysis(geojson: dict, frame: pd.DataFrame) -> None:
+    deserts = load_desert_data()
+    stats = desert_summary(deserts)
+
+    section_header(
+        "Where an ambulance is more than 25 minutes away",
+        "Census block groups more than 25 minutes' drive from the nearest "
+        "ambulance station (the Maine Rural Health Research Center "
         "definition), computed on the real road network. Only transporting "
         "ambulance/ALS agencies count — a BLS first-response agency with no "
-        "ambulance does not end a desert. Two scenarios: <b>strict</b> uses only "
-        "stations at their own geocoded address; <b>full</b> adds stations "
-        "located by name-matching against the HIFLD fire/EMS layer.</p>",
-        unsafe_allow_html=True,
+        "ambulance does not end a desert. Two scenarios: <b>strict</b> uses "
+        "only stations at their own geocoded address; <b>full</b> adds "
+        "stations located by name-matching against the HIFLD fire/EMS layer.",
+        first=True,
     )
 
     tiles = [
-        ("Desert population (strict)", f"{strict_pop:,}",
-         f"{100 * strict_pop / total_pop:.1f}% of NY, own-address stations only"),
-        ("Desert population (full)", f"{full_pop:,}",
-         f"{100 * full_pop / total_pop:.1f}% of NY, incl. name-matched stations"),
-        ("Provenance gap", f"{strict_pop - full_pop:,}",
+        ("Desert population (strict)", f"{stats['strict_pop']:,}",
+         f"{stats['strict_pct']:.1f}% of NY, own-address stations only"),
+        ("Desert population (full)", f"{stats['full_pop']:,}",
+         f"{stats['full_pct']:.1f}% of NY, incl. name-matched stations"),
+        ("Provenance gap", f"{stats['strict_pop'] - stats['full_pop']:,}",
          "people whose coverage depends on the name-match"),
-        ("Counties touched", f"{n_counties_strict} of 62",
+        ("Counties touched", f"{stats['counties']} of 62",
          "contain at least one desert block group (strict)"),
     ]
-    for column, (label, value, unit) in zip(st.columns(4, gap="small"), tiles):
-        column.markdown(stat_tile(label, value, unit), unsafe_allow_html=True)
+    for index, (column, (label, value, unit)) in enumerate(
+        zip(st.columns(4, gap="small"), tiles)
+    ):
+        column.markdown(
+            stat_tile(label, value, unit, lead=index < 2), unsafe_allow_html=True
+        )
 
     # theme=None: every color/font in this figure is set explicitly, so
     # Streamlit's theme pass adds nothing and skipping it avoids a benign
@@ -892,7 +1010,7 @@ def render_desert_analysis(geojson: dict, frame: pd.DataFrame) -> None:
         build_desert_map(geojson, frame, deserts),
         width="stretch",
         theme=None,
-        config={"displayModeBar": False, "scrollZoom": False},
+        config=MAP_CONFIG,
     )
 
     st.markdown(
@@ -909,25 +1027,58 @@ def render_desert_analysis(geojson: dict, frame: pd.DataFrame) -> None:
     )
 
 
+def render_lead() -> None:
+    """Masthead, the finding, and the qualifier that has to travel with it.
+
+    The page opens on the desert number rather than on a description of the
+    project: it is the one result here that a reader who never scrolls should
+    still leave with. The upper-bound caveat is in the same paragraph, not
+    further down the page, because the figure is meaningless without it.
+    """
+    stats = desert_summary(load_desert_data())
+
+    st.markdown(
+        '<div class="ss-masthead"><span class="ss-wordmark">StationScope</span>'
+        '<span class="ss-vintage">New York State · NY DOH Bureau of EMS '
+        "registry, 6 Jul 2026</span></div>"
+        f'<h1 class="ss-title">{stats["strict_pop"]:,} New Yorkers live more '
+        "than 25 minutes from the nearest ambulance station</h1>"
+        f'<p class="ss-standfirst">That is <strong>{stats["strict_pct"]:.1f}% '
+        "of the state</strong>, measured as drive time on the real road "
+        "network from every transporting ambulance station StationScope could "
+        "place on a map. It is an <strong>upper bound</strong>: 353 of New "
+        "York's 1,043 registered ambulance agencies list a PO Box rather than "
+        "a street address and could not be located, and locating them can only "
+        "shrink these deserts. Below — where the deserts are, how many "
+        "stations each county has, and every agency on the state's "
+        "registry.</p>",
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     inject_styles()
     geojson, frame = load_data()
     agency_frame = load_agency_data()
 
-    st.markdown(
-        '<p class="ss-eyebrow">StationScope</p>'
-        '<h1 class="ss-title">EMS station access across New York State</h1>'
-        '<p class="ss-sub">Every certified EMS agency in New York, mapped by '
-        "county. Read the two densities together: a county can look well-served "
-        "by population and thinly covered by geography — or the reverse.</p>",
-        unsafe_allow_html=True,
+    render_lead()
+
+    # 1 — the finding.
+    render_desert_analysis(geojson, frame)
+
+    # 2 — the station inventory the finding is computed from.
+    section_header(
+        "How many stations each county has",
+        "A desert is about distance to the nearest station; this is about how "
+        "many stations exist at all. Read the two densities together — a "
+        "county can look well-served by population and thinly covered by "
+        "geography, or the reverse. Pick a county to zoom in and see its "
+        "individual agencies.",
     )
 
-    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
-
-    total_stations = int(frame["total_station_count"].sum())
     total_population = int(frame["population_2025"].sum())
     total_area = float(frame["land_area_sq_mi"].sum())
+    total_stations = int(frame["total_station_count"].sum())
     tiles = [
         ("Counties", "62", "all of New York State"),
         ("EMS agencies", f"{total_stations:,}", "certified, statewide"),
@@ -945,34 +1096,43 @@ def main() -> None:
     for column, (label, value, unit) in zip(st.columns(4, gap="small"), tiles):
         column.markdown(stat_tile(label, value, unit), unsafe_allow_html=True)
 
-    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
-
     # The selected county is read *before* the map is drawn, so the map can
     # render its zoomed state on the same run the selection changes.
     selected_county = st.session_state.get("county_selectbox")
     if selected_county == NO_COUNTY_SELECTED:
         selected_county = None
 
-    # Filter row sits above everything it scopes. It colors the statewide map
-    # and orders the county table below; in the zoomed county view only the
-    # table is affected, so the label follows what it's actually doing.
-    st.markdown(
-        f'<p class="ss-eyebrow">{"Rank counties by" if selected_county else "Color counties by"}</p>',
-        unsafe_allow_html=True,
-    )
-    metric_key = st.segmented_control(
-        "Color counties by",
-        list(METRICS),
-        default=next(iter(METRICS)),
-        label_visibility="collapsed",
-    )
+    # Both controls sit above the map they steer. The picker widget itself
+    # cannot be created here -- `handle_map_click` writes its session-state key
+    # after the map renders, which Streamlit forbids once the widget exists --
+    # so this reserves its slot and `render_county_picker` fills it further
+    # down the script.
+    st.markdown('<div style="height:1.6rem"></div>', unsafe_allow_html=True)
+    control_row = st.columns([3, 4], gap="medium")
+    picker_slot = control_row[1].container()
+
+    with control_row[0]:
+        # Colors the statewide map and orders the county table below; in the
+        # zoomed county view only the table is affected, so the label follows
+        # what it is actually doing.
+        st.markdown(
+            f'<p class="ss-label">{"Rank counties by" if selected_county else "Color counties by"}</p>',
+            unsafe_allow_html=True,
+        )
+        metric_key = st.segmented_control(
+            "Color counties by",
+            list(METRICS),
+            default=next(iter(METRICS)),
+            label_visibility="collapsed",
+        )
     # A segmented control can be cleared by clicking the active option; keep the
     # map on a real choice rather than rendering an empty state.
     if metric_key is None:
         metric_key = next(iter(METRICS))
     if selected_county is None:
         st.markdown(
-            f'<p class="ss-caption">{METRICS[metric_key]["caption"]}</p>',
+            f'<p class="ss-caption" style="margin-bottom:0.8rem;">'
+            f'{METRICS[metric_key]["caption"]}</p>',
             unsafe_allow_html=True,
         )
 
@@ -981,18 +1141,25 @@ def main() -> None:
     else:
         render_county_map(geojson, frame, agency_frame, selected_county)
 
-    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
+    with picker_slot:
+        render_county_picker(frame)
 
-    render_county_drilldown(frame, agency_frame)
+    if selected_county is None:
+        st.markdown(
+            '<p class="ss-note" style="margin-top:0.9rem;">Click a county on '
+            "the map, or choose one above, to zoom in on its individually "
+            "registered EMS agencies.</p>",
+            unsafe_allow_html=True,
+        )
+    else:
+        render_county_agencies(agency_frame, selected_county)
 
-    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
-
-    render_desert_analysis(geojson, frame)
-
-    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
-
-    # Table view twin — every value on the map is readable without hovering.
-    st.markdown('<p class="ss-eyebrow">All 62 counties</p>', unsafe_allow_html=True)
+    # 3 — the same numbers, readable without hovering.
+    section_header(
+        "All 62 counties",
+        f"The map's values as a table, sorted by <b>{metric_key.lower()}</b> "
+        "density, highest first — use the metric toggle above to re-sort.",
+    )
     table = frame[
         [
             "county",
@@ -1033,7 +1200,10 @@ def main() -> None:
         },
     )
 
-    st.markdown('<hr class="ss-rule">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ss-section"><hr class="ss-section-rule"></div>',
+        unsafe_allow_html=True,
+    )
     st.markdown(
         '<p class="ss-note"><b>Sources.</b> Station counts: NY State Department '
         "of Health, Bureau of EMS agency registry (ambulance/ALS and BLS "
