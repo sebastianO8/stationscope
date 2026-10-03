@@ -1,0 +1,8 @@
+# Test/development dependencies, on top of requirements.txt.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   pytest
+#
+# The suite runs against the committed files in data/ and the parser
+# functions in scripts/ -- no Docker, no OSRM server, no network.
+pytest>=8.0
