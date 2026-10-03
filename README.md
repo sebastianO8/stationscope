@@ -265,6 +265,22 @@ The app reads only precomputed files from `data/processed/`. Rebuilding the
 desert analysis from raw data additionally requires a local OSRM routing
 server; see `scripts/setup_osrm.sh`.
 
+## Running the tests
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+34 tests, about 15 seconds, run on every push via GitHub Actions. They check
+the pipeline's invariants against the committed data rather than mocking it:
+that the DOH PDF parsers reproduce the registry's own per-county subtotals,
+that the county join keeps all 62 counties, that desert drive times under the
+full scenario never exceed the strict scenario, and that the routing chunker
+cannot repeat the bug described in [CLAUDE.md](CLAUDE.md) where a batch
+spanning two lat-bands starved edge centroids of their nearest stations. No
+Docker, no OSRM server, and no network access required.
+
 ## Repository layout
 
 ```
