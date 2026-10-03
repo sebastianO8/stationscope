@@ -1,8 +1,10 @@
 # StationScope
 
 StationScope is an open-source tool mapping EMS (Emergency Medical Services) station
-access across New York State. It starts with a pilot set of 5-6 counties — a mix of
-urban, suburban, and rural — before expanding to all 62 NY counties.
+access across New York State. It covers all 62 NY counties. The original plan
+was a 5-6 county pilot; statewide coverage turned out to be no harder, because
+the authoritative source (the NY DOH registry) is published statewide in a
+single pair of documents rather than per county.
 
 ## Metrics
 
@@ -41,12 +43,17 @@ scripts/       # data prep: raw -> processed
 app/           # Streamlit app (reads only from data/processed)
 ```
 
-## Pilot counties
+## County coverage
 
-Starting scope is 5-6 counties chosen to represent NY's urban/suburban/rural
-mix. When adding a new pilot county, make sure raw data sources exist and are
-comparable in quality/format to the existing ones before including it —
-inconsistent source data is worse than a smaller pilot set.
+All 62 counties are covered. The pilot-county staging this section used to
+describe was never needed: the DOH registry arrives statewide, so there is no
+per-county onboarding step for the station counts or the two density metrics.
+
+The rule that replaced it applies to *sources*, not counties: before adding a
+new raw dataset, confirm it is comparable in quality and format to what is
+already here, and that it covers the whole state. A source that covers only
+part of New York would reintroduce exactly the partial-coverage problem the
+pilot framing was meant to manage.
 
 ## Conventions
 
@@ -90,8 +97,10 @@ work (including expanding to more counties) should check here first.
 - [2026-08-03] The DOH PDFs have no lat/long — they're mailing-address
   listings only. Counts and the two density metrics can be computed straight
   from the registry, but map-view coordinates still require a separate
-  geocoding/join step (candidate: the HIFLD combined dataset above, joined by
-  address/city — not yet built).
+  geocoding/join step. **Built since:** Census batch geocoding of registered
+  street addresses (2026-08-05) plus a name-match against the HIFLD layer
+  (2026-08-08), together covering 1,313 of 1,770 agencies — see those entries
+  below for the method and its limits.
 
 - [2026-08-03] Parsing the DOH PDFs is heuristic, not a structured export:
   text layout has overlapping columns (service ID digits get smashed into the

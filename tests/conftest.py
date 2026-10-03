@@ -31,8 +31,8 @@ BLS_PDF = RAW / "ny_doh_ems_agencies_bls_nontransport_2026-07-06.pdf"
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
-        "pdf: slow tests that re-parse the DOH PDFs page by page "
-        "(minutes, not seconds); deselect with -m 'not pdf'",
+        "pdf: tests that re-parse the DOH PDFs page by page -- ~11s, which "
+        "is most of the suite's runtime; deselect with -m 'not pdf'",
     )
 
 
