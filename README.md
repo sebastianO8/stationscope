@@ -1,5 +1,7 @@
 # StationScope
 
+[![tests](https://github.com/sebastianO8/stationscope/actions/workflows/ci.yml/badge.svg)](https://github.com/sebastianO8/stationscope/actions/workflows/ci.yml)
+
 **StationScope measures how far New Yorkers live from an ambulance.** Using
 the standard research definition — a place is an *ambulance desert* if it is
 more than 25 minutes' drive from the nearest ambulance station — it finds
